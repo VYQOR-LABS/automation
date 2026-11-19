@@ -28,30 +28,40 @@ export class AiOrchestrator {
     const toolIntent = this.getToolIntent(request.message);
 
     const selectedTool = toolIntent ? toolList.find((tool) => tool.name === toolIntent) : undefined;
-    let toolResult: unknown = null;
+    let toolResultPromise: Promise<unknown> = Promise.resolve(null);
 
     if (selectedTool) {
-      const evaluation = await this.deps.approvalService.evaluate({
-        toolName: selectedTool.name,
-        risk: selectedTool.risk,
-        payload: { message: request.message },
-      });
-
-      if (evaluation.approved) {
-        toolResult = await this.deps.toolRegistry.execute(selectedTool.name, {
-          userId: request.userId,
-          message: request.message,
+      toolResultPromise = (async () => {
+        const evaluation = await this.deps.approvalService.evaluate({
+          toolName: selectedTool.name,
+          risk: selectedTool.risk,
+          payload: { message: request.message },
         });
-      } else {
-        toolResult = { approvalRequired: true, approvalId: evaluation.approvalId, message: evaluation.message };
-      }
+
+        if (evaluation.approved) {
+          return this.deps.toolRegistry.execute(selectedTool.name, {
+            userId: request.userId,
+            message: request.message,
+          });
+        }
+
+        return {
+          approvalRequired: true,
+          approvalId: evaluation.approvalId,
+          message: evaluation.message,
+        };
+      })();
     }
 
-    const aiResponse = await this.deps.openAiService.generateReply({
+    const aiResponsePromise = this.deps.openAiService.generateReply({
       userId: request.userId,
       message: request.message,
       context: memoryMatches.map((match) => match.factText),
     });
+    const [toolResult, aiResponse] = await Promise.all([
+      toolResultPromise,
+      aiResponsePromise,
+    ]);
 
     return {
       userId: request.userId,

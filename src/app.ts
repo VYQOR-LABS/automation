@@ -12,14 +12,138 @@ import { MessagingService } from './modules/messaging/messaging.service.js';
 import { UserService } from './modules/user/user.service.js';
 import { ApprovalService } from './modules/tools/approval.service.js';
 import { ToolRegistry } from './modules/tools/tool-registry.js';
-import { WhatsAppService } from './modules/whatsapp/whatsapp.service.js';
+import {
+  WhatsAppGraphApiError,
+  WhatsAppService,
+} from './modules/whatsapp/whatsapp.service.js';
+
+function formatResponseBody(payload: string | Buffer | null) {
+  if (payload === null) {
+    return null;
+  }
+
+  const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : payload;
+  try {
+    return JSON.parse(body) as unknown;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return body;
+    }
+    throw error;
+  }
+}
 
 export async function buildApp() {
   const app = Fastify({
-    logger: true,
+    logger: {
+      transport: {
+        target: 'pino-pretty',
+        options: {
+          colorize: Boolean(process.stdout.isTTY),
+          translateTime: 'SYS:yyyy-mm-dd HH:MM:ss.l',
+          ignore: 'pid,hostname',
+          singleLine: false,
+        },
+      },
+    },
     ajv: {
       customOptions: { strictSchema: false },
     },
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    if (error instanceof WhatsAppGraphApiError) {
+      const message = error.message.includes('nonexisting field (message_templates)')
+        ? 'Meta could not find the message_templates edge for this ID. Use the WhatsApp Business Account (WABA) ID, not a business portfolio ID or phone number ID, and ensure the access token has whatsapp_business_management permission and access to that WABA.'
+        : error.message;
+
+      request.log.error(
+        {
+          upstreamStatus: error.upstreamStatus,
+          metaCode: error.metaCode,
+          fbtraceId: error.fbtraceId,
+          details: error.details,
+        },
+        'WhatsApp Graph API request failed',
+      );
+
+      return reply.code(502).send({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        code: 'WHATSAPP_GRAPH_API_ERROR',
+        message,
+        metaCode: error.metaCode,
+        fbtraceId: error.fbtraceId,
+      });
+    }
+
+    const errorProperties = typeof error === 'object' && error !== null
+      ? error as {
+          statusCode?: unknown;
+          code?: unknown;
+          validation?: unknown;
+          validationContext?: unknown;
+        }
+      : {};
+    const statusCode = typeof errorProperties.statusCode === 'number' &&
+      errorProperties.statusCode >= 400 &&
+      errorProperties.statusCode < 600
+      ? errorProperties.statusCode
+      : 500;
+    const message = error instanceof Error ? error.message : String(error);
+    const errorName = error instanceof Error ? error.name : 'Error';
+    const errorLabel = statusCode === 400
+      ? 'Bad Request'
+      : statusCode === 401
+        ? 'Unauthorized'
+        : statusCode === 403
+          ? 'Forbidden'
+          : statusCode === 404
+            ? 'Not Found'
+            : statusCode === 500
+              ? 'Internal Server Error'
+              : errorName;
+    request.log.error({ err: error }, message);
+    return reply.code(statusCode).send({
+      statusCode,
+      error: errorLabel,
+      code: errorProperties.code,
+      message,
+      ...(errorProperties.validation ? { validation: errorProperties.validation } : {}),
+      ...(errorProperties.validationContext
+        ? { validationContext: errorProperties.validationContext }
+        : {}),
+    });
+  });
+
+  app.addHook('preValidation', async (request) => {
+    request.log.info(
+      {
+        method: request.method,
+        url: request.url,
+        requestBody: request.body ?? null,
+      },
+      'HTTP request body',
+    );
+  });
+
+  app.addHook('onSend', async (request, reply, payload) => {
+    const responseBody = typeof payload === 'string' || Buffer.isBuffer(payload)
+      ? formatResponseBody(payload)
+      : payload === null
+        ? null
+        : '[stream response body not buffered]';
+
+    request.log.info(
+      {
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        responseBody,
+      },
+      'HTTP response body',
+    );
+    return payload;
   });
 
   app.register(swagger, {
@@ -40,7 +164,11 @@ export async function buildApp() {
         { name: 'System', description: 'Service status and available modules.' },
         { name: 'Users', description: 'Create and retrieve Vico AI user profiles.' },
         { name: 'Messaging', description: 'Ingest and send user messages.' },
-        { name: 'WhatsApp', description: 'Receive WhatsApp webhook events.' },
+        {
+          name: 'WhatsApp',
+          description:
+            'Receive webhook events and manage business phone numbers. Use a dedicated number: numbers in the consumer WhatsApp app are unsupported, while WhatsApp Business app numbers can be onboarded through the supported migration flow. Choose the production display name during Embedded Signup because changing it later can be difficult.',
+        },
         { name: 'Google', description: 'Start and complete Google OAuth authorization.' },
         { name: 'AI', description: 'Process a user message and generate an AI response.' },
       ],
@@ -402,17 +530,139 @@ export async function buildApp() {
     {
       schema: {
         tags: ['Messaging'],
-        summary: 'Send a WhatsApp text message',
+        summary: 'Send a WhatsApp text, template, or Direct Send message',
         description:
-          'Sends a text message to a WhatsApp phone number using the configured WhatsApp Cloud API credentials.',
+          'Sends a regular text message, an approved template, or a Direct Send utility/authentication message. Direct Send requires Meta account eligibility; ineligible accounts should use an approved template. Authentication Direct Send is an alpha feature.',
         body: {
-          type: 'object',
-          properties: {
-            to: { type: 'string', minLength: 1, description: 'Recipient phone number in international format.', example: '+15551234567' },
-            text: { type: 'string', minLength: 1, description: 'Text body to send.', example: 'Hello from Vico AI!' },
+          oneOf: [
+            {
+              type: 'object',
+              properties: {
+                to: { type: 'string', minLength: 1, description: 'Recipient phone number in international format.', example: '+15551234567' },
+                text: { type: 'string', minLength: 1, description: 'Text body to send.', example: 'Hello from Vico AI!' },
+              },
+              required: ['to', 'text'],
+              example: { to: '+254791614036', text: 'Hello from Vico AI!' },
+            },
+            {
+              type: 'object',
+              properties: {
+                to: { type: 'string', minLength: 1, description: 'Recipient phone number in international format.', example: '+254791614036' },
+                type: { type: 'string', enum: ['template'], example: 'template' },
+                template: {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string', minLength: 1, example: 'hello_world' },
+                    language: {
+                      type: 'object',
+                      properties: {
+                        code: { type: 'string', minLength: 1, example: 'en_US' },
+                      },
+                      required: ['code'],
+                    },
+                    components: {
+                      type: 'array',
+                      items: { type: 'object', additionalProperties: true },
+                    },
+                  },
+                  required: ['name', 'language'],
+                },
+              },
+              required: ['to', 'type', 'template'],
+              example: {
+                to: '+254791614036',
+                type: 'template',
+                template: {
+                  name: 'hello_world',
+                  language: { code: 'en_US' },
+                },
+              },
+            },
+            {
+              type: 'object',
+              description:
+                'Direct Send message. Requires an eligible Meta business account. Utility supports text messages; authentication supports text and interactive OTP messages.',
+              properties: {
+                messaging_product: {
+                  type: 'string',
+                  enum: ['whatsapp'],
+                  default: 'whatsapp',
+                  example: 'whatsapp',
+                },
+                recipient_type: {
+                  type: 'string',
+                  enum: ['individual'],
+                  example: 'individual',
+                },
+                to: {
+                  type: 'string',
+                  minLength: 1,
+                  description: 'Recipient phone number in international format.',
+                  example: '254791614036',
+                },
+                type: {
+                  type: 'string',
+                  enum: ['text', 'interactive'],
+                },
+                category: {
+                  type: 'string',
+                  enum: ['utility', 'authentication'],
+                  description: 'Direct Send message category.',
+                },
+                text: {
+                  type: 'object',
+                  properties: {
+                    body: { type: 'string', minLength: 1, example: 'Your order has shipped.' },
+                  },
+                  required: ['body'],
+                },
+                interactive: {
+                  type: 'object',
+                  description: 'Interactive authentication OTP payload supported by Meta.',
+                  additionalProperties: true,
+                },
+                template_name: {
+                  type: 'string',
+                  minLength: 1,
+                  description: 'Optional Direct Send template name for message attribution.',
+                },
+              },
+              required: ['to', 'type', 'category'],
+              oneOf: [
+                {
+                  properties: {
+                    type: { const: 'text' },
+                    text: { type: 'object' },
+                  },
+                  required: ['text'],
+                },
+                {
+                  properties: {
+                    type: { const: 'interactive' },
+                    category: { const: 'authentication' },
+                    interactive: { type: 'object' },
+                  },
+                  required: ['interactive'],
+                },
+              ],
+              example: {
+                messaging_product: 'whatsapp',
+                recipient_type: 'individual',
+                to: '254791614036',
+                type: 'text',
+                text: { body: 'Your order has shipped.' },
+                category: 'utility',
+              },
+            },
+          ],
+          example: {
+            to: '254791614036',
+            type: 'template',
+            template: {
+              name: 'hello_world',
+              language: { code: 'en_US' },
+            },
           },
-          required: ['to', 'text'],
-          example: { to: '+254791614036', text: 'Hello from Vico AI!' },
         },
         response: {
           400: validationErrorResponse,
@@ -433,7 +683,8 @@ export async function buildApp() {
           },
           500: {
             type: 'object',
-            description: 'The send operation failed or WhatsApp credentials are missing.',
+            description:
+              'The send operation failed, credentials are missing, or Meta rejected Direct Send because the business account is not eligible. In that case, send an approved template instead.',
             additionalProperties: true,
             example: { statusCode: 500, error: 'Internal Server Error', message: 'WhatsApp Cloud API credentials are not configured.' },
           },
@@ -441,9 +692,643 @@ export async function buildApp() {
       },
     },
     async (request) => {
-      const data = z.object({ to: z.string().min(1), text: z.string().min(1) }).parse(request.body);
-      const sent = await whatsappService.sendTextMessage(data.to, data.text);
+      const data = z.union([
+        z.object({
+          to: z.string().min(1),
+          text: z.string().min(1),
+        }),
+        z.object({
+          to: z.string().min(1),
+          type: z.literal('template'),
+          template: z.object({
+            name: z.string().min(1),
+            language: z.object({ code: z.string().min(1) }),
+            components: z.array(z.record(z.string(), z.unknown())).optional(),
+          }),
+        }),
+        z.object({
+          messaging_product: z.literal('whatsapp').optional(),
+          recipient_type: z.literal('individual').optional(),
+          to: z.string().min(1),
+          category: z.enum(['utility', 'authentication']),
+          type: z.enum(['text', 'interactive']),
+          text: z.object({ body: z.string().min(1) }).optional(),
+          interactive: z.record(z.string(), z.unknown()).optional(),
+          template_name: z.string().min(1).optional(),
+        }).superRefine((data, context) => {
+          if (data.type === 'text' && !data.text) {
+            context.addIssue({
+              code: 'custom',
+              path: ['text'],
+              message: 'text.body is required for Direct Send text messages.',
+            });
+          }
+          if (data.type === 'interactive' && !data.interactive) {
+            context.addIssue({
+              code: 'custom',
+              path: ['interactive'],
+              message: 'interactive payload is required for Direct Send interactive messages.',
+            });
+          }
+          if (data.type === 'text' && data.interactive) {
+            context.addIssue({
+              code: 'custom',
+              path: ['interactive'],
+              message: 'interactive can only be used with type "interactive".',
+            });
+          }
+          if (data.type === 'interactive' && data.text) {
+            context.addIssue({
+              code: 'custom',
+              path: ['text'],
+              message: 'text can only be used with type "text".',
+            });
+          }
+        }),
+      ]).parse(request.body);
+
+      const sent = 'template' in data
+        ? await whatsappService.sendTemplateMessage(data.to, data.template)
+        : 'category' in data
+          ? await whatsappService.sendDirectMessage(data)
+          : await whatsappService.sendTextMessage(data.to, data.text);
       return { sent };
+    },
+  );
+
+  api.get(
+    '/api/whatsapp/message-templates',
+    {
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'List WhatsApp message templates',
+        description:
+          'Lists templates belonging to the WhatsApp Business Account configured by WHATSAPP_BUSINESS_ACCOUNT_ID. Supports field selection, status filtering, page size, and Graph API cursor pagination.',
+        querystring: {
+          type: 'object',
+          properties: {
+            fields: {
+              type: 'string',
+              description: 'Comma-separated template fields.',
+              example: 'name,category,status',
+            },
+            limit: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 1000,
+              description: 'Maximum number of templates in this page.',
+              example: 5,
+            },
+            status: {
+              type: 'string',
+              enum: ['APPROVED', 'PENDING', 'REJECTED', 'PAUSED', 'DISABLED', 'IN_APPEAL', 'PENDING_DELETION'],
+              description: 'Filter by template status.',
+              example: 'APPROVED',
+            },
+            after: {
+              type: 'string',
+              description: 'Graph API cursor for the next page.',
+            },
+            before: {
+              type: 'string',
+              description: 'Graph API cursor for the previous page.',
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            description: 'Templates and pagination information returned by Meta.',
+            properties: {
+              data: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string', example: '1387372356726668' },
+                    name: { type: 'string', example: 'reservation_confirmation' },
+                    language: { type: 'string', example: 'en_US' },
+                    category: {
+                      type: 'string',
+                      enum: ['MARKETING', 'UTILITY', 'AUTHENTICATION'],
+                    },
+                    status: { type: 'string', example: 'APPROVED' },
+                    parameter_format: { type: 'string', example: 'NAMED' },
+                    components: {
+                      type: 'array',
+                      items: { type: 'object', additionalProperties: true },
+                    },
+                  },
+                  additionalProperties: true,
+                },
+              },
+              paging: { type: 'object', additionalProperties: true },
+            },
+            required: ['data'],
+            additionalProperties: true,
+          },
+          400: validationErrorResponse,
+          502: {
+            type: 'object',
+            description:
+              'Meta does not recognize the message_templates edge for the configured WhatsApp Business Account ID. Verify that WHATSAPP_BUSINESS_ACCOUNT_ID is the WABA ID and that the token has whatsapp_business_management access to it.',
+            properties: {
+              statusCode: { type: 'number', example: 502 },
+              error: { type: 'string', example: 'Bad Gateway' },
+              code: { type: 'string', example: 'WHATSAPP_GRAPH_API_ERROR' },
+              message: { type: 'string' },
+              metaCode: { type: 'number', example: 100 },
+              fbtraceId: { type: 'string', example: 'AuI8fI1a9aPpliT-CcMFr8h' },
+            },
+            required: ['statusCode', 'error', 'code', 'message'],
+          },
+          500: {
+            type: 'object',
+            description: 'The Meta Graph API request failed or credentials are missing.',
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+    async (request) => {
+      const query = z.object({
+        fields: z.string().min(1).optional(),
+        limit: z.coerce.number().int().min(1).max(1000).optional(),
+        status: z.enum([
+          'APPROVED',
+          'PENDING',
+          'REJECTED',
+          'PAUSED',
+          'DISABLED',
+          'IN_APPEAL',
+          'PENDING_DELETION',
+        ]).optional(),
+        after: z.string().min(1).optional(),
+        before: z.string().min(1).optional(),
+      }).parse(request.query);
+      return whatsappService.getMessageTemplates(query);
+    },
+  );
+
+  api.post(
+    '/api/whatsapp/message-templates',
+    {
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'Create a WhatsApp message template',
+        description:
+          'Submits a template for Meta review to the WhatsApp Business Account configured by WHATSAPP_BUSINESS_ACCOUNT_ID. Names must use lowercase letters, numbers, and underscores (up to 512 characters), and must be unique for each language in the account. Template components are passed through to Meta for validation.',
+        body: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 512,
+              pattern: '^[a-z0-9_]+$',
+              example: 'reservation_confirmation',
+            },
+            language: { type: 'string', minLength: 1, example: 'en_US' },
+            category: {
+              type: 'string',
+              enum: ['MARKETING', 'UTILITY', 'AUTHENTICATION'],
+              example: 'UTILITY',
+            },
+            parameter_format: {
+              type: 'string',
+              enum: ['POSITIONAL', 'NAMED'],
+              example: 'NAMED',
+            },
+            components: {
+              type: 'array',
+              minItems: 1,
+              items: { type: 'object', additionalProperties: true },
+            },
+            allow_category_change: { type: 'boolean' },
+            message_send_ttl_seconds: { type: 'integer', minimum: 1 },
+          },
+          required: ['name', 'language', 'category', 'components'],
+          additionalProperties: true,
+          example: {
+            name: 'reservation_confirmation',
+            language: 'en_US',
+            category: 'UTILITY',
+            parameter_format: 'NAMED',
+            components: [
+              {
+                type: 'BODY',
+                text: 'Your reservation for {{guest_count}} at {{time}} is confirmed.',
+              },
+            ],
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            description: 'Template creation result returned by Meta.',
+            properties: {
+              id: { type: 'string', example: '1387372356726668' },
+              status: { type: 'string', example: 'PENDING' },
+              category: { type: 'string', example: 'UTILITY' },
+            },
+            additionalProperties: true,
+          },
+          400: validationErrorResponse,
+          500: {
+            type: 'object',
+            description: 'Template creation failed or credentials are missing.',
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+    async (request) => {
+      const body = z.object({
+        name: z.string().min(1).max(512).regex(/^[a-z0-9_]+$/),
+        language: z.string().min(1),
+        category: z.enum(['MARKETING', 'UTILITY', 'AUTHENTICATION']),
+        parameter_format: z.enum(['POSITIONAL', 'NAMED']).optional(),
+        components: z.array(z.record(z.string(), z.unknown())).min(1),
+        allow_category_change: z.boolean().optional(),
+        message_send_ttl_seconds: z.number().int().positive().optional(),
+      }).passthrough().parse(request.body);
+      return whatsappService.createMessageTemplate(body);
+    },
+  );
+
+  api.post(
+    '/api/whatsapp/message-templates/:templateId',
+    {
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'Edit a WhatsApp message template',
+        description:
+          'Updates a template category, all of its components, and/or its time-to-live. Components are replaced as a whole, not edited individually. Meta permits edits only for APPROVED, REJECTED, or PAUSED templates; an approved template category cannot be changed.',
+        params: {
+          type: 'object',
+          properties: {
+            templateId: { type: 'string', minLength: 1, example: '1387372356726668' },
+          },
+          required: ['templateId'],
+        },
+        body: {
+          type: 'object',
+          properties: {
+            category: {
+              type: 'string',
+              enum: ['MARKETING', 'UTILITY', 'AUTHENTICATION'],
+              example: 'MARKETING',
+            },
+            components: {
+              type: 'array',
+              minItems: 1,
+              items: { type: 'object', additionalProperties: true },
+              description: 'Replaces the complete component list.',
+            },
+            message_send_ttl_seconds: { type: 'integer', minimum: 1 },
+          },
+          minProperties: 1,
+          additionalProperties: false,
+          example: { category: 'MARKETING' },
+        },
+        response: {
+          200: {
+            type: 'object',
+            description: 'Template update result returned by Meta.',
+            properties: { success: { type: 'boolean', example: true } },
+            additionalProperties: true,
+          },
+          400: validationErrorResponse,
+          500: {
+            type: 'object',
+            description: 'Template update failed or credentials are missing.',
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+    async (request) => {
+      const params = z.object({ templateId: z.string().min(1) }).parse(request.params);
+      const body = z.object({
+        category: z.enum(['MARKETING', 'UTILITY', 'AUTHENTICATION']).optional(),
+        components: z.array(z.record(z.string(), z.unknown())).min(1).optional(),
+        message_send_ttl_seconds: z.number().int().positive().optional(),
+      }).strict().refine(
+        (value) => Object.values(value).some((item) => item !== undefined),
+        'At least one template field must be provided.',
+      ).parse(request.body);
+      return whatsappService.editMessageTemplate(params.templateId, body);
+    },
+  );
+
+  api.delete(
+    '/api/whatsapp/message-templates',
+    {
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'Delete WhatsApp message templates',
+        description:
+          'Deletes templates from the WhatsApp Business Account configured by WHATSAPP_BUSINESS_ACCOUNT_ID. Deletes by name, by a matching template ID and name, or by up to 100 template IDs. Deleting by name removes every language variant with that name. Bulk IDs cannot be combined with name or a single ID. Requires the whatsapp_business_management permission.',
+        querystring: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              minLength: 1,
+              description: 'Template name; deletes all language variants with this name unless hsmId is also specified.',
+              example: 'order_confirmation',
+            },
+            hsmId: {
+              type: 'string',
+              minLength: 1,
+              description: 'Template ID. Must be used together with name.',
+              example: '1407680676729941',
+            },
+            hsmIds: {
+              type: 'string',
+              description: 'Comma-separated template IDs, up to 100.',
+              example: '1387372356726668,1304694804498707',
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            description: 'Deletion result returned by Meta.',
+            properties: { success: { type: 'boolean', example: true } },
+            additionalProperties: true,
+          },
+          400: validationErrorResponse,
+          500: {
+            type: 'object',
+            description: 'Template deletion failed or credentials are missing.',
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const querySchema = z.object({
+        name: z.string().min(1).optional(),
+        hsmId: z.string().min(1).optional(),
+        hsmIds: z.string().min(1).optional(),
+      }).strict().superRefine((value, context) => {
+        if (value.hsmIds) {
+          if (value.name || value.hsmId) {
+            context.addIssue({
+              code: 'custom',
+              message: 'hsmIds cannot be combined with name or hsmId.',
+            });
+          }
+          const ids = value.hsmIds.split(',').map((id) => id.trim());
+          if (ids.length > 100 || ids.some((id) => !id)) {
+            context.addIssue({
+              code: 'custom',
+              message: 'hsmIds must contain between 1 and 100 non-empty IDs.',
+            });
+          }
+        } else if (!value.name) {
+          context.addIssue({
+            code: 'custom',
+            message: 'Provide name or hsmIds to identify templates to delete.',
+          });
+        }
+        if (value.hsmId && !value.name) {
+          context.addIssue({
+            code: 'custom',
+            message: 'hsmId must be used together with name.',
+          });
+        }
+      });
+      const parsedQuery = querySchema.safeParse(request.query);
+      if (!parsedQuery.success) {
+        return reply.code(400).send({
+          statusCode: 400,
+          code: 'FST_ERR_VALIDATION',
+          error: 'Bad Request',
+          message: parsedQuery.error.issues.map((issue) => issue.message).join('; '),
+        });
+      }
+      const query = parsedQuery.data;
+
+      return whatsappService.deleteMessageTemplates({
+        name: query.name,
+        hsmId: query.hsmId,
+        hsmIds: query.hsmIds?.split(',').map((id) => id.trim()),
+      });
+    },
+  );
+
+  api.get(
+    '/api/whatsapp/phone-numbers',
+    {
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'List WhatsApp business phone numbers',
+        description:
+          'Gets phone numbers associated with the WhatsApp Business Account configured by WHATSAPP_BUSINESS_ACCOUNT_ID. The optional accountMode filter selects SANDBOX or LIVE numbers.',
+        querystring: {
+          type: 'object',
+          properties: {
+            fields: {
+              type: 'string',
+              minLength: 1,
+              description: 'Comma-separated Graph API fields to return.',
+              example: 'id,display_phone_number,code_verification_status',
+            },
+            accountMode: {
+              type: 'string',
+              enum: ['SANDBOX', 'LIVE'],
+              description: 'Filter numbers by account mode.',
+              example: 'LIVE',
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            description: 'Phone numbers and pagination cursors returned by Meta.',
+            properties: {
+              data: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string', example: '1972385232742141' },
+                    verified_name: { type: 'string', example: "John's Cake Shop" },
+                    code_verification_status: {
+                      type: 'string',
+                      enum: ['VERIFIED', 'NOT_VERIFIED'],
+                      example: 'VERIFIED',
+                    },
+                    display_phone_number: {
+                      type: 'string',
+                      example: '+1 631-555-1111',
+                    },
+                    quality_rating: { type: 'string', example: 'GREEN' },
+                    platform_type: { type: 'string', example: 'CLOUD_API' },
+                    throughput: { type: 'object', additionalProperties: true },
+                    webhook_configuration: {
+                      type: 'object',
+                      additionalProperties: true,
+                    },
+                  },
+                  additionalProperties: true,
+                },
+              },
+              paging: { type: 'object', additionalProperties: true },
+            },
+            required: ['data'],
+            additionalProperties: true,
+          },
+          400: validationErrorResponse,
+          500: {
+            type: 'object',
+            description: 'The Meta Graph API request failed or WhatsApp credentials are missing.',
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+    async (request) => {
+      const query = z.object({
+        fields: z.string().min(1).optional(),
+        accountMode: z.enum(['SANDBOX', 'LIVE']).optional(),
+      }).parse(request.query);
+      return whatsappService.getPhoneNumbers(query);
+    },
+  );
+
+  api.get(
+    '/api/whatsapp/phone-numbers/:phoneNumberId',
+    {
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'Get WhatsApp phone number metadata',
+        description:
+          'Gets phone number metadata, including display-name review status and OTP verification status. code_verification_status is VERIFIED or NOT_VERIFIED.',
+        params: {
+          type: 'object',
+          properties: {
+            phoneNumberId: {
+              type: 'string',
+              minLength: 1,
+              description: 'WhatsApp business phone number ID.',
+              example: '1972385232742141',
+            },
+          },
+          required: ['phoneNumberId'],
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            fields: {
+              type: 'string',
+              minLength: 1,
+              description: 'Comma-separated Graph API fields to return.',
+              example: 'display_phone_number,name_status,new_name_status,code_verification_status',
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', example: '1972385232742141' },
+              display_phone_number: {
+                type: 'string',
+                example: '+1 631-555-1111',
+              },
+              last_onboarded_time: {
+                type: 'string',
+                example: '2023-08-22T19:05:53+0000',
+              },
+              code_verification_status: {
+                type: 'string',
+                enum: ['VERIFIED', 'NOT_VERIFIED'],
+                example: 'VERIFIED',
+              },
+              name_status: {
+                type: 'string',
+                enum: ['APPROVED', 'DECLINED', 'EXPIRED', 'PENDING_REVIEW', 'NONE'],
+                example: 'APPROVED',
+              },
+              new_name_status: {
+                type: 'string',
+                enum: ['APPROVED', 'DECLINED', 'EXPIRED', 'PENDING_REVIEW', 'NONE'],
+                example: 'APPROVED',
+              },
+            },
+            additionalProperties: true,
+          },
+          400: validationErrorResponse,
+          500: {
+            type: 'object',
+            description: 'The Meta Graph API request failed or WhatsApp credentials are missing.',
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+    async (request) => {
+      const params = z.object({ phoneNumberId: z.string().min(1) }).parse(request.params);
+      const query = z.object({ fields: z.string().min(1).optional() }).parse(request.query);
+      return whatsappService.getPhoneNumber(params.phoneNumberId, query.fields);
+    },
+  );
+
+  api.post(
+    '/api/whatsapp/phone-numbers/:phoneNumberId/register',
+    {
+      schema: {
+        tags: ['WhatsApp'],
+        summary: 'Register a WhatsApp phone number',
+        description:
+          'Registers a verified number for Cloud API use. Call this within 14 days after Embedded Signup; otherwise the number must go through Embedded Signup again. The PIN is the six-digit two-step verification PIN.',
+        params: {
+          type: 'object',
+          properties: {
+            phoneNumberId: {
+              type: 'string',
+              minLength: 1,
+              description: 'WhatsApp business phone number ID.',
+              example: '1972385232742141',
+            },
+          },
+          required: ['phoneNumberId'],
+        },
+        body: {
+          type: 'object',
+          properties: {
+            pin: {
+              type: 'string',
+              pattern: '^\\d{6}$',
+              description: 'Six-digit two-step verification PIN.',
+              example: '123456',
+            },
+          },
+          required: ['pin'],
+        },
+        response: {
+          200: {
+            type: 'object',
+            description: 'Registration result returned by Meta.',
+            additionalProperties: true,
+            example: { success: true },
+          },
+          400: validationErrorResponse,
+          500: {
+            type: 'object',
+            description: 'Registration failed or WhatsApp credentials are missing.',
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+    async (request) => {
+      const params = z.object({ phoneNumberId: z.string().min(1) }).parse(request.params);
+      const body = z.object({ pin: z.string().regex(/^\d{6}$/) }).parse(request.body);
+      return whatsappService.registerPhoneNumber(params.phoneNumberId, body.pin);
     },
   );
 
@@ -537,7 +1422,7 @@ export async function buildApp() {
     const signature = request.headers['x-hub-signature-256'] as string | undefined;
 
     if (config.whatsappWebhookSecret && signature) {
-      const rawBody = JSON.stringify(payload);
+      const rawBody = Buffer.from(JSON.stringify(payload));
       const valid = whatsappService.verifyWebhookSignature(rawBody, signature);
       if (!valid) {
         logger.warn('Invalid WhatsApp webhook signature');

@@ -15,6 +15,8 @@ export const config = {
   openAiApiKey: process.env.OPENAI_API_KEY ?? '',
   openAiModel: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
   embeddingModel: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small',
+  whatsappApiVersion: process.env.WHATSAPP_API_VERSION ?? 'v25.0',
+  whatsappBusinessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID ?? '',
   whatsappWebhookSecret: process.env.WHATSAPP_WEBHOOK_SECRET ?? '',
   whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN ?? '',
   googleClientId: process.env.GOOGLE_CLIENT_ID ?? '',
