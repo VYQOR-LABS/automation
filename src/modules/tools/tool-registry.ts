@@ -1,7 +1,9 @@
+import type { ToolRisk } from './approval.service.js';
+
 export type ToolDefinition = {
   name: string;
   description: string;
-  risk: 'low' | 'medium' | 'high';
+  risk: ToolRisk;
   execute: (input: Record<string, unknown>) => Promise<unknown>;
 };
 

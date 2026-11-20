@@ -1,12 +1,22 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, {
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from 'fastify';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { z } from 'zod';
 import { config } from './config.js';
 import { logger } from './lib/logger.js';
 import { AiOrchestrator } from './modules/ai/orchestrator.js';
-import { OpenAIService } from './modules/ai/openai.service.js';
-import { GoogleIntegrationService } from './modules/google/google.service.js';
+import { createAiProvider } from './modules/ai/provider.factory.js';
+import {
+  GoogleAuthError,
+  GoogleAuthService,
+  GOOGLE_SCOPES,
+} from './modules/google/google.service.js';
+import { CalendarService } from './modules/google/calendar.service.js';
+import { GmailService } from './modules/google/gmail.service.js';
 import { MemoryService } from './modules/memory/memory.service.js';
 import { MessagingService } from './modules/messaging/messaging.service.js';
 import { UserService } from './modules/user/user.service.js';
@@ -33,9 +43,121 @@ function formatResponseBody(payload: string | Buffer | null) {
   }
 }
 
-export async function buildApp() {
+function googleFailure(
+  error: unknown,
+  tool: 'calendar_lookup' | 'gmail_search',
+) {
+  const properties = typeof error === 'object' && error !== null
+    ? error as { response?: { status?: unknown } | null }
+    : {};
+  const status = properties.response?.status;
+  if (error instanceof GoogleAuthError) {
+    const statusCode = error.code === 'GOOGLE_ACCOUNT_NOT_CONNECTED'
+      ? 401
+      : error.code === 'GOOGLE_OAUTH_STATE_INVALID'
+        ? 400
+        : error.code === 'GOOGLE_ACCOUNT_ALREADY_CONNECTED'
+          ? 409
+          : error.code === 'GOOGLE_TOKEN_STORAGE_NOT_CONFIGURED' ||
+              error.code === 'GOOGLE_AUTH_NOT_CONFIGURED'
+            ? 500
+          : error.code === 'GOOGLE_MISSING_PERMISSIONS' ||
+              error.code === 'GOOGLE_AUTHORIZATION_REVOKED'
+            ? 403
+            : 502;
+    return {
+      statusCode,
+      result: {
+        success: false,
+        tool,
+        error: {
+          code: error.code,
+          message: error.message,
+        },
+      },
+    };
+  }
+  if (status === 401) {
+    return {
+      statusCode: 401,
+      result: {
+        success: false,
+        tool,
+        error: {
+          code: 'GOOGLE_AUTHENTICATION_ERROR',
+          message: 'Google authorization failed. Reconnect the Google account.',
+        },
+      },
+    };
+  }
+  if (status === 403) {
+    return {
+      statusCode: 403,
+      result: {
+        success: false,
+        tool,
+        error: {
+          code: 'GOOGLE_AUTHORIZATION_ERROR',
+          message: 'Google access is missing a required permission.',
+        },
+      },
+    };
+  }
+  return {
+    statusCode: 502,
+    result: {
+      success: false,
+      tool,
+      error: {
+        code: 'GOOGLE_API_ERROR',
+        message: 'Unable to complete the Google API request.',
+      },
+    },
+  };
+}
+
+function getOAuthStateCookie(request: FastifyRequest) {
+  const cookie = request.headers.cookie;
+  const value = cookie?.split(';')
+  .map((part) => part.trim())
+  .find((part) => part.startsWith('google_oauth_state='))
+  ?.slice('google_oauth_state='.length);
+  return value ? decodeURIComponent(value) : undefined;
+}
+
+function buildOAuthStateCookie(state: string, secure: boolean, clear = false) {
+  return [
+  `google_oauth_state=${clear ? '' : encodeURIComponent(state)}`,
+  'Path=/',
+  'HttpOnly',
+  'SameSite=Lax',
+  secure ? 'Secure' : '',
+  clear ? 'Max-Age=0' : 'Max-Age=600',
+  ].filter(Boolean).join('; ');
+}
+
+type GoogleAuthServiceContract = Pick<
+  GoogleAuthService,
+  | 'beginAuthorization'
+  | 'completeAuthorization'
+  | 'validateAuthorizationState'
+  | 'getAuthenticatedClient'
+>;
+
+export async function buildApp(
+  dependencies: { googleAuthService?: GoogleAuthServiceContract } = {},
+) {
   const app = Fastify({
     logger: {
+      serializers: {
+        req: (request) => ({
+          method: request.method,
+          url: request.url.split('?')[0],
+          hostname: request.hostname,
+          remoteAddress: request.ip,
+          remotePort: request.socket.remotePort,
+        }),
+      },
       transport: {
         target: 'pino-pretty',
         options: {
@@ -120,7 +242,7 @@ export async function buildApp() {
     request.log.info(
       {
         method: request.method,
-        url: request.url,
+        url: request.url.split('?')[0],
         requestBody: request.body ?? null,
       },
       'HTTP request body',
@@ -128,16 +250,31 @@ export async function buildApp() {
   });
 
   app.addHook('onSend', async (request, reply, payload) => {
-    const responseBody = typeof payload === 'string' || Buffer.isBuffer(payload)
-      ? formatResponseBody(payload)
-      : payload === null
-        ? null
-        : '[stream response body not buffered]';
+    const callbackPath = request.url.split('?')[0];
+    const isGoogleOAuthCallback =
+      callbackPath === '/google/redirect' ||
+      callbackPath === '/api/google/callback';
+    const isGoogleOAuthStart =
+      callbackPath === '/api/google/connect' ||
+      callbackPath === '/api/google/auth-url';
+    const containsPrivateGoogleData =
+      callbackPath === '/api/google/calendar/events' ||
+      callbackPath.startsWith('/api/google/gmail/') ||
+      callbackPath === '/api/ai/run';
+    const responseBody = isGoogleOAuthCallback || isGoogleOAuthStart
+      ? '[redacted OAuth response]'
+      : containsPrivateGoogleData
+        ? '[redacted private integration response]'
+        : typeof payload === 'string' || Buffer.isBuffer(payload)
+          ? formatResponseBody(payload)
+          : payload === null
+            ? null
+            : '[stream response body not buffered]';
 
     request.log.info(
       {
         method: request.method,
-        url: request.url,
+        url: request.url.split('?')[0],
         statusCode: reply.statusCode,
         responseBody,
       },
@@ -181,8 +318,14 @@ export async function buildApp() {
 
   const userService = new UserService();
   const memoryService = new MemoryService();
-  const openAiService = new OpenAIService();
-  const googleIntegrationService = new GoogleIntegrationService();
+  const aiProvider = createAiProvider();
+  const approvalService = new ApprovalService(
+    config.features.approvalsEnabled,
+    config.approvalTtlMs,
+  );
+  const googleAuthService = dependencies.googleAuthService ?? new GoogleAuthService();
+  const calendarService = new CalendarService(approvalService, googleAuthService);
+  const gmailService = new GmailService(approvalService, googleAuthService);
   const whatsappService = new WhatsAppService();
   const toolRegistry = new ToolRegistry();
   toolRegistry.register({
@@ -198,31 +341,60 @@ export async function buildApp() {
   toolRegistry.register({
     name: 'calendar_lookup',
     description: 'Inspect the user calendar for upcoming events.',
-    risk: 'medium',
-    execute: async (input) => ({
-      tool: 'calendar_lookup',
-      userId: input.userId ?? 'unknown',
-      events: [],
-    }),
+    risk: 'low',
+    execute: async (input) => {
+      const message = typeof input.message === 'string' ? input.message.toLowerCase() : '';
+      const period = message.includes('tomorrow')
+        ? 'tomorrow'
+        : message.includes('this week') || message.includes('week')
+          ? 'this_week'
+          : message.includes('today')
+            ? 'today'
+            : 'upcoming';
+      try {
+        const events = await calendarService.listEvents(
+          { period },
+          2500,
+          typeof input.userId === 'string' ? input.userId : undefined,
+        );
+        return {
+          success: true,
+          tool: 'calendar_lookup',
+          data: { events },
+        };
+      } catch (error) {
+        return googleFailure(error, 'calendar_lookup').result;
+      }
+    },
   });
   toolRegistry.register({
     name: 'gmail_search',
     description: 'Search a user’s Gmail messages for relevant information.',
-    risk: 'high',
-    execute: async (input) => ({
-      tool: 'gmail_search',
-      userId: input.userId ?? 'unknown',
-      results: [],
-    }),
+    risk: 'low',
+    execute: async (input) => {
+      try {
+        const messages = await gmailService.listMessages(
+          typeof input.message === 'string' ? input.message : 'in:inbox',
+          5,
+          typeof input.userId === 'string' ? input.userId : 'shared',
+        );
+        return {
+          success: true,
+          tool: 'gmail_search',
+          data: { messages },
+        };
+      } catch (error) {
+        return googleFailure(error, 'gmail_search').result;
+      }
+    },
   });
 
-  const approvalService = new ApprovalService(config.features.approvalsEnabled);
   const messagingService = new MessagingService();
   const aiOrchestrator = new AiOrchestrator({
     memoryService,
     toolRegistry,
     approvalService,
-    openAiService,
+    aiProvider,
   });
 
   const validationErrorResponse = {
@@ -1445,104 +1617,359 @@ export async function buildApp() {
   );
 
   api.get(
-    '/api/google/auth-url',
+    '/api/google/calendar/events',
     {
       schema: {
         tags: ['Google'],
-        summary: 'Get the Google OAuth authorization URL',
+        summary: 'List events from the primary Google Calendar',
         description:
-          'Builds a Google OAuth consent URL requesting offline access to read Gmail, Calendar, Contacts, and Drive.',
+          'Reads Calendar events using the connected shared Google account. Defaults to upcoming events and Africa/Nairobi timezone.',
+        querystring: {
+          type: 'object',
+          properties: {
+            period: {
+              type: 'string',
+              enum: ['today', 'tomorrow', 'this_week', 'upcoming'],
+              default: 'upcoming',
+            },
+            timeZone: {
+              type: 'string',
+              default: 'Africa/Nairobi',
+              example: 'Africa/Nairobi',
+            },
+          },
+        },
         response: {
           200: {
             type: 'object',
             properties: {
-              authUrl: {
-                type: 'string',
-                format: 'uri',
-                description: 'Redirect the user to this URL to authorize Google access.',
-                example: 'https://accounts.google.com/o/oauth2/v2/auth?...',
-              },
-            },
-            required: ['authUrl'],
-            example: { authUrl: 'https://accounts.google.com/o/oauth2/v2/auth?...' },
-          },
-        },
-      },
-    },
-    async () => ({
-      authUrl: googleIntegrationService.buildAuthUrl(),
-    }),
-  );
-
-  api.get(
-    '/api/google/callback',
-    {
-      schema: {
-        tags: ['Google'],
-        summary: 'Complete Google OAuth authorization',
-        description:
-          'Exchanges the authorization code returned by Google for OAuth tokens. If code is omitted, the endpoint responds with a missing-code error.',
-        querystring: {
-          type: 'object',
-          properties: {
-            code: {
-              type: 'string',
-              description: 'One-time authorization code returned to the configured OAuth redirect URI.',
-              example: '4/0AbCD-example-code',
-            },
-          },
-        },
-        response: {
-          200: {
-            oneOf: [
-              {
+              success: { type: 'boolean', example: true },
+              tool: { type: 'string', example: 'calendar_lookup' },
+              data: {
                 type: 'object',
                 properties: {
-                  error: { type: 'string', example: 'missing_oauth_code' },
-                },
-                required: ['error'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  tokens: {
-                    type: 'object',
-                    description: 'OAuth token set returned by Google.',
-                    additionalProperties: true,
-                    example: {
-                      access_token: 'ya29.example',
-                      refresh_token: '1//example',
-                      token_type: 'Bearer',
-                      scope: 'https://www.googleapis.com/auth/gmail.readonly',
-                      expiry_date: 1731590000000,
+                  events: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string', example: 'abc123' },
+                        summary: { type: 'string', example: 'Project review' },
+                        description: { type: 'string', example: 'Weekly project review.' },
+                        start: { type: 'string', example: '2026-11-21T09:00:00+03:00' },
+                        end: { type: 'string', example: '2026-11-21T10:00:00+03:00' },
+                        location: { type: 'string', example: 'Nairobi' },
+                        status: { type: 'string', example: 'confirmed' },
+                      },
+                      required: ['id'],
+                      additionalProperties: false,
                     },
                   },
                 },
-                required: ['tokens'],
+                required: ['events'],
               },
-            ],
-            examples: [
-              { error: 'missing_oauth_code' },
-              { tokens: { access_token: 'ya29.example', token_type: 'Bearer', expiry_date: 1731590000000 } },
-            ],
+            },
+            required: ['success', 'tool', 'data'],
           },
-          500: {
+          '4xx': {
             type: 'object',
-            description: 'Token exchange failed or Google OAuth credentials are missing.',
-            additionalProperties: true,
-            example: { statusCode: 500, error: 'Internal Server Error', message: 'Google OAuth client has not been configured.' },
+            properties: {
+              success: { type: 'boolean', example: false },
+              tool: { type: 'string', example: 'calendar_lookup' },
+              error: {
+                type: 'object',
+                properties: {
+                  code: { type: 'string', example: 'GOOGLE_AUTHENTICATION_ERROR' },
+                  message: { type: 'string', example: 'Google authorization failed.' },
+                },
+                required: ['code', 'message'],
+              },
+            },
+            required: ['success', 'tool', 'error'],
+          },
+          502: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean', example: false },
+              tool: { type: 'string', example: 'calendar_lookup' },
+              error: {
+                type: 'object',
+                properties: {
+                  code: { type: 'string', example: 'GOOGLE_CALENDAR_ERROR' },
+                  message: { type: 'string', example: 'Unable to retrieve calendar events.' },
+                },
+                required: ['code', 'message'],
+              },
+            },
+            required: ['success', 'tool', 'error'],
           },
         },
       },
     },
-    async (request) => {
-      const { code } = request.query as { code?: string };
-      if (!code) {
-        return { error: 'missing_oauth_code' };
+    async (request, reply) => {
+      const query = z.object({
+        period: z.enum(['today', 'tomorrow', 'this_week', 'upcoming']).default('upcoming'),
+        timeZone: z.string().min(1).default('Africa/Nairobi'),
+      }).parse(request.query);
+      try {
+        new Intl.DateTimeFormat('en', { timeZone: query.timeZone }).format(new Date());
+      } catch (error) {
+        if (!(error instanceof RangeError)) {
+          throw error;
+        }
+        return reply.code(400).send({
+          success: false,
+          tool: 'calendar_lookup',
+          error: {
+            code: 'INVALID_TIME_ZONE',
+            message: 'The requested time zone is not valid.',
+          },
+        });
+      }
+      try {
+        const events = await calendarService.listEvents(query);
+        return {
+          success: true,
+          tool: 'calendar_lookup',
+          data: { events },
+        };
+      } catch (error) {
+        const failure = googleFailure(error, 'calendar_lookup');
+        return reply.code(failure.statusCode).send(failure.result);
+      }
+    },
+  );
+
+  const googleConnectHandler = async (_request: FastifyRequest, reply: FastifyReply) => {
+    const { state, authUrl } = googleAuthService.beginAuthorization();
+    reply.header(
+      'set-cookie',
+      buildOAuthStateCookie(state, config.nodeEnv === 'production'),
+    );
+    logger.info(
+      {
+        operation: 'oauth.authorization_url',
+        scopeCount: GOOGLE_SCOPES.length,
+        offlineAccess: true,
+      },
+      'Google OAuth connection started',
+    );
+    return { authUrl };
+  };
+
+  const connectRouteSchema = {
+    tags: ['Google'],
+    summary: 'Connect the shared Google account',
+    description:
+      'Starts offline Google OAuth authorization. A short-lived HttpOnly state cookie binds the callback to this browser. The shared Google connection cannot be replaced through a second callback.',
+    response: {
+      200: {
+        type: 'object',
+        properties: {
+          authUrl: {
+            type: 'string',
+            format: 'uri',
+            description: 'Open this URL to authorize the shared Google account.',
+          },
+        },
+        required: ['authUrl'],
+      },
+    },
+  };
+
+  api.get('/api/google/connect', { schema: connectRouteSchema }, googleConnectHandler);
+  api.get('/api/google/auth-url', { schema: connectRouteSchema }, googleConnectHandler);
+
+  const googleOAuthCallbackHandler = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ) => {
+    const query = z.object({
+      code: z.string().optional(),
+      state: z.string().optional(),
+      error: z.string().optional(),
+    }).parse(request.query);
+    const cookieState = getOAuthStateCookie(request);
+    reply.header(
+      'set-cookie',
+      buildOAuthStateCookie('', config.nodeEnv === 'production', true),
+    );
+
+    try {
+      googleAuthService.validateAuthorizationState(query.state, cookieState);
+      if (query.error || !query.code) {
+        return reply.code(400).send({
+          success: false,
+          error: {
+            code: query.error === 'access_denied'
+              ? 'GOOGLE_CONSENT_DENIED'
+              : 'GOOGLE_OAUTH_CODE_MISSING',
+            message: query.error === 'access_denied'
+              ? 'Google authorization was not granted.'
+              : 'Google did not return an authorization code.',
+          },
+        });
       }
 
-      const tokens = await googleIntegrationService.exchangeCode(code);
-      return { tokens };
+      const result = await googleAuthService.completeAuthorization({
+        code: query.code,
+        state: query.state!,
+        cookieState,
+      });
+      logger.info(
+        {
+          operation: 'oauth.callback',
+          connected: result.connected,
+          scopeCount: GOOGLE_SCOPES.length,
+        },
+        'Google OAuth connection completed',
+      );
+      return result;
+    } catch (error) {
+      const failure = googleFailure(error, 'calendar_lookup');
+      logger.warn(
+        {
+          operation: 'oauth.callback',
+          code: failure.result.error.code,
+          statusCode: failure.statusCode,
+        },
+        'Google OAuth callback failed',
+      );
+      return reply.code(failure.statusCode).send({
+        success: false,
+        error: failure.result.error,
+      });
+    }
+  };
+
+  const googleCallbackOptions = {
+    schema: {
+      tags: ['Google'],
+      summary: 'Complete Google OAuth authorization',
+      description:
+        'Validates the one-time browser state, exchanges the authorization code, and stores encrypted shared-account credentials. Tokens are never returned.',
+      querystring: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: 'One-time Google authorization code.' },
+          state: { type: 'string', description: 'OAuth state returned by Google.' },
+          error: { type: 'string', description: 'OAuth consent error, if any.' },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            connected: { type: 'boolean', example: true },
+          },
+          required: ['connected'],
+        },
+        400: { type: 'object', additionalProperties: true },
+        403: { type: 'object', additionalProperties: true },
+        409: { type: 'object', additionalProperties: true },
+        502: { type: 'object', additionalProperties: true },
+      },
+    },
+  };
+  api.get('/google/redirect', googleCallbackOptions, googleOAuthCallbackHandler);
+  api.get('/api/google/callback', googleCallbackOptions, googleOAuthCallbackHandler);
+
+  api.post(
+    '/api/approvals/:approvalId/decision',
+    {
+      schema: {
+        tags: ['AI'],
+        summary: 'Approve or reject a pending action',
+        description:
+          'Resolves an approval owned by the supplied user ID. The caller must be authenticated upstream and provide that authenticated user ID; this endpoint does not establish identity itself.',
+        params: {
+          type: 'object',
+          properties: {
+            approvalId: { type: 'string', format: 'uuid' },
+          },
+          required: ['approvalId'],
+        },
+        body: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string', format: 'uuid' },
+            decision: { type: 'string', enum: ['approve', 'reject'] },
+          },
+          required: ['userId', 'decision'],
+        },
+      },
+    },
+    async (request, reply) => {
+      const { approvalId } = z.object({
+        approvalId: z.string().uuid(),
+      }).parse(request.params);
+      const { userId, decision } = z.object({
+        userId: z.string().uuid(),
+        decision: z.enum(['approve', 'reject']),
+      }).parse(request.body);
+
+      const result = await approvalService.decide({
+        approvalId,
+        userId,
+        decision,
+      });
+
+      if (result.status === 'not_found') {
+        return reply.code(404).send({
+          status: 'not_found',
+          message: 'Approval request was not found.',
+        });
+      }
+
+      const approvedAction = result.status === 'approved' && result.newlyDecided
+        ? result.action
+        : undefined;
+      const approvedPayload = result.status === 'approved' && result.newlyDecided
+        ? result.payload
+        : undefined;
+      if (
+        !approvedAction ||
+        !approvedPayload
+      ) {
+        return {
+          approvalId,
+          status: result.status,
+          executed: false,
+          ...(result.message ? { message: result.message } : {}),
+        };
+      }
+
+      let actionResult: unknown;
+      try {
+        actionResult = await toolRegistry.execute(approvedAction, {
+          ...approvedPayload,
+          userId,
+        });
+      } catch (error) {
+        await approvalService.recordExecution({
+          approvalId,
+          userId,
+          actionType: approvedAction,
+          payload: approvedPayload,
+          success: false,
+        });
+        throw error;
+      }
+
+      await approvalService.recordExecution({
+        approvalId,
+        userId,
+        actionType: approvedAction,
+        payload: approvedPayload,
+        success: true,
+      });
+
+      return {
+        approvalId,
+        status: result.status,
+        executed: true,
+        result: actionResult,
+      };
     },
   );
 
@@ -1558,7 +1985,7 @@ export async function buildApp() {
         tags: ['AI'],
         summary: 'Process a message with Vico AI',
         description:
-          'Runs a user message through the AI orchestrator. It searches enabled user memory, evaluates relevant tools and approvals, and returns the generated response with execution context.',
+          'Runs a user message through the AI orchestrator. It searches enabled user memory, evaluates relevant tools and approvals, and returns the generated response with execution context. Google credentials are loaded from the shared OAuth connection.',
         body: {
           type: 'object',
           properties: {
@@ -1596,31 +2023,29 @@ export async function buildApp() {
                   properties: {
                     name: { type: 'string', example: 'calendar_lookup' },
                     description: { type: 'string', example: 'Inspect the user calendar for upcoming events.' },
-                    risk: { type: 'string', enum: ['low', 'medium', 'high'], example: 'medium' },
+                    risk: { type: 'string', enum: ['low', 'medium', 'high'], example: 'low' },
                   },
                   required: ['name', 'description', 'risk'],
                 },
               },
               response: { type: 'string', description: 'Generated assistant response.', example: 'You have two events today.' },
-              model: { type: 'string', description: 'Configured AI model name.', example: 'gpt-4o-mini' },
+              provider: { type: 'string', description: 'Active AI provider.', example: 'ollama' },
+              model: { type: 'string', description: 'Configured AI model name.', example: 'phi3' },
               generatedAt: { type: 'string', format: 'date-time' },
             },
-            required: ['userId', 'intent', 'memoryMatches', 'toolResult', 'availableTools', 'response', 'model', 'generatedAt'],
+            required: ['userId', 'intent', 'memoryMatches', 'toolResult', 'availableTools', 'response', 'provider', 'model', 'generatedAt'],
             example: {
               userId: 'usr_123',
               intent: 'calendar_lookup',
               memoryMatches: [],
-              toolResult: {
-                approvalRequired: true,
-                approvalId: 'approval_123',
-                message: 'Action calendar_lookup requires explicit user approval before execution.',
-              },
+              toolResult: { events: [{ summary: 'Project sync' }] },
               availableTools: [
                 { name: 'memory_search', description: 'Search user memory for personal facts and context.', risk: 'low' },
-                { name: 'calendar_lookup', description: 'Inspect the user calendar for upcoming events.', risk: 'medium' },
+                { name: 'calendar_lookup', description: 'Inspect the user calendar for upcoming events.', risk: 'low' },
               ],
               response: 'You have two events today.',
-              model: 'gpt-4o-mini',
+              provider: 'ollama',
+              model: 'phi3',
               generatedAt: '2026-11-14T12:00:00.000Z',
             },
           },

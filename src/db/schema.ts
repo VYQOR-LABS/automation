@@ -6,9 +6,11 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const userStatusEnum = pgEnum('user_status', ['active', 'inactive', 'suspended']);
 export const conversationStatusEnum = pgEnum('conversation_status', ['active', 'archived', 'closed']);
@@ -81,7 +83,7 @@ export const messages = pgTable('messages', {
 
 export const integrationAccounts = pgTable('integration_accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id),
+  userId: uuid('user_id').references(() => users.id),
   provider: varchar('provider', { length: 64 }).notNull(),
   providerAccountId: varchar('provider_account_id', { length: 255 }),
   accountEmail: varchar('account_email', { length: 255 }),
@@ -90,7 +92,11 @@ export const integrationAccounts = pgTable('integration_accounts', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
-});
+}, (table) => [
+  uniqueIndex('integration_accounts_google_shared_uidx')
+    .on(table.provider)
+    .where(sql`${table.userId} is null and ${table.provider} = 'google' and ${table.status} = 'active'`),
+]);
 
 export const oauthTokens = pgTable('oauth_tokens', {
   id: uuid('id').primaryKey().defaultRandom(),
