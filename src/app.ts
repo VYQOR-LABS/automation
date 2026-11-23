@@ -5,6 +5,7 @@ import Fastify, {
   type FastifyReply,
   type FastifyRequest,
 } from 'fastify';
+import fastifyStatic from '@fastify/static';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import rawBody from 'fastify-raw-body';
@@ -2140,6 +2141,11 @@ export async function buildApp(
   app.get('/favicon.svg', async (_request, reply) => {
     const favicon = await readFile(resolve(process.cwd(), 'public', 'favicon.svg'));
     return reply.type('image/svg+xml').send(favicon);
+  });
+
+  await app.register(fastifyStatic, {
+    root: resolve(process.cwd(), 'public'),
+    prefix: '/',
   });
 
   app.register(registerApiRoutes);

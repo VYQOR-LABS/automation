@@ -149,72 +149,143 @@
       </section>
 
       <section id="google">
-        <h2>3. Google API data</h2>
-        <h3>Google permissions and uses</h3>
-        <p>When an operator connects a Google account, the authorization flow requests
-          permission to manage Calendar events, read Gmail messages, and send Gmail
-          messages. The OAuth scopes are
-          <code>calendar.events</code>, <code>gmail.readonly</code>, and
-          <code>gmail.send</code>. Offline access lets the service refresh access
-          credentials without asking the account owner to authorize every request.</p>
+        <h2>3. Google user data: access, use, storage, and sharing</h2>
+        <p>This section specifically describes Google user data handled by Vico AI.
+          Vico AI connects one shared Google account for this application deployment.
+          Google data is accessed only after the account owner completes OAuth
+          consent, and is used to carry out the requested Calendar or Gmail feature
+          and, where requested, to generate an answer from the retrieved information.</p>
+        <h3>Data accessed and why</h3>
+        <p>The OAuth consent request contains these scopes. The scope authorizes
+          access; whether a particular operation is available also depends on the
+          application workflow:</p>
         <ul>
           <li><strong>Calendar:</strong> the
             <code>https://www.googleapis.com/auth/calendar.events</code> scope allows
-            the service to view and manage Calendar events. Current user-facing
-            functionality includes looking up events in the primary calendar; other
-            write operations are implemented in service code but are not necessarily
-            exposed in every deployment.</li>
+            viewing and managing events on the connected account's calendars. The
+            current application lookup reads event identifiers, titles, descriptions,
+            start/end times, locations, and status from the primary calendar. The
+            service layer also implements event creation, retrieval, update, and
+            deletion; the general HTTP API currently exposes event lookup, while
+            other operations depend on configured tool workflows.</li>
           <li><strong>Gmail:</strong> the
             <code>https://www.googleapis.com/auth/gmail.readonly</code> scope allows
-            the service to find and read messages, including message headers, snippets,
-            and body content returned by Gmail. The
+            finding and reading Gmail messages. The service may access message IDs,
+            thread IDs, snippets, dates, sender/recipient/subject headers, and
+            available message body text. Search terms are sent to Gmail as the
+            message query. The
             <code>https://www.googleapis.com/auth/gmail.send</code> scope permits
-            sending messages; sending functionality exists in the service layer and
-            its availability depends on the configured workflow.</li>
+            sending email. The service layer can send the recipient addresses,
+            subject, and body supplied for an email action; the configured application
+            workflow determines whether this function is available to a user.</li>
         </ul>
-        <p>We use Google API data only to provide and maintain the user-facing features
-          requested through this service, such as finding Calendar events, looking up
-          Gmail messages, and carrying out permitted actions. We do not use Google API
-          data for advertising or use it to build advertising profiles. Google API
-          data is not sold.
-          Access is limited to the scopes granted by the account owner and to the
-          application features that use them.</p>
-        <h3>Token storage and handling</h3>
-        <p>The service encrypts access and refresh tokens with AES-256-GCM before
-          storing them in its PostgreSQL database. The encryption key is configured
-          separately by the operator. Tokens are decrypted in application memory when
-          needed; the Google API client uses the access token to authenticate requests
-          to Google. The service refreshes expiring access tokens and saves updated
-          credentials. Tokens and OAuth authorization codes are not returned in the
-          OAuth callback response. Operators must protect both the database and the
-          encryption key; encryption does not protect data from a compromised running
-          application or an operator with access to the key.</p>
-        <p>Tokens and integration metadata are stored in the operator-configured
-          PostgreSQL database. The application also defines database records for
-          owner, conversation, message, memory, approval, and audit information;
-          whether a particular request or content is persisted depends on the
-          processing path. Application logs contain operational metadata, and the
-          HTTP logger records response bodies for some routes while explicitly
-          redacting OAuth, public-page, and selected private integration responses.
-          Actual database, log, backup, and host access and retention are controlled
-          by the operator's deployment.</p>
+        <h3>How Google data is used</h3>
+        <ul>
+          <li>Calendar event data is returned to the user or included in an assistant
+            response when the user asks Vico AI to look up relevant events.</li>
+          <li>Gmail search results and, when requested, message content are used to
+            answer a Gmail-related request. The AI assistant may receive relevant
+            Gmail results together with the user's request to generate the answer.</li>
+          <li>Email and Calendar write operations, when made available by the
+            configured workflow, are performed only to carry out the requested
+            action. Certain sensitive email and Calendar changes are subject to the
+            application's approval workflow.</li>
+          <li>OAuth credentials are used to authenticate requests to Google and
+            refresh access when needed.</li>
+        </ul>
+        <p>Vico AI does not use Google user data for advertising, sell it, or use it
+          to create advertising profiles. It is not used for a purpose unrelated to
+          providing or improving the application's user-facing features, security,
+          compliance with law, or a purpose the account owner has expressly
+          authorized.</p>
+        <h3>Storage and protection</h3>
+        <p>Access and refresh tokens, token expiry, token type, granted scopes, and
+          integration metadata are stored in the operator-configured PostgreSQL
+          database. The access and refresh tokens are encrypted before storage using
+          AES-256-GCM and an operator-configured base64-encoded 32-byte encryption
+          key. Tokens are decrypted in application memory when needed; the Google
+          client library uses the access token to authenticate API requests. Expiring
+          access tokens are refreshed and updated credentials are saved. The OAuth
+          callback does not return tokens. The encryption key is separate from the
+          token database and must be restricted and protected by the operator.
+          Encryption of tokens does not mean that Calendar or Gmail content, or all
+          other personal information, is encrypted at rest.</p>
+        <p>Calendar and Gmail results are used in the active request and can be
+          returned in an API response or passed to the configured AI provider. The
+          Google token store does not store message bodies or Calendar event results.
+          When OpenAI is configured, generated responses are held in an in-memory
+          application cache for up to 60 seconds; this cache is not a permanent
+          database record. Ollama configuration does not add an application-level
+          response cache. This repository does not establish a general retention
+          period for data handled by the hosting, database, queue, AI provider, or
+          backups.</p>
+        <h3>Sharing and transfers of Google user data</h3>
+        <ul>
+          <li><strong>Google:</strong> the OAuth authorization code, refresh requests,
+            Gmail searches/messages, and Calendar requests are sent to Google to
+            authorize and provide the requested integration.</li>
+          <li><strong>AI provider:</strong> if the request uses Google results to
+            generate an answer, the request and relevant tool results may be sent to
+            the AI provider selected by the operator (OpenAI or Ollama). Ollama may
+            run on the operator's machine or at a configured remote service. This
+            transfer is for generating the requested user-facing response, not for
+            advertising or an unrelated purpose. The provider's processing and
+            retention depend on the provider and deployment; this repository does
+            not establish their retention or model-training settings.</li>
+          <li><strong>Infrastructure:</strong> encrypted credentials and operational
+            data are processed by the operator-configured database, application host,
+            queue, and logging systems. The application currently has no built-in
+            HTTP authentication for general API routes. The operator must restrict
+            access to the deployment and its infrastructure; the OAuth state cookie
+            protects the OAuth callback but does not authenticate API users.</li>
+        </ul>
+        <p>Application logs normally record Google operation names, status, duration,
+          and result counts rather than event or message bodies. On a Google API
+          failure, the logged request URL is sanitized to remove query parameters
+          and fragments so that Gmail search terms are not included. Other operator
+          infrastructure and provider logs are governed by their own configurations.</p>
+        <p>Google user data is not sold, used for advertising, or transferred to
+          third parties for advertising. It is shared with a provider only as
+          necessary to provide or improve the user-facing feature, to protect
+          security, to comply with law, or with the account owner's consent. The
+          operator must ensure any handling of Google user data by personnel or
+          service providers complies with the Google API Services User Data Policy
+          and its Limited Use requirements. This application does not implement
+          human review of Google data as a product feature; any operational access
+          must be limited to circumstances permitted by that policy.</p>
+        <h3>Retention, revocation, and deletion of Google data</h3>
+        <p>The application keeps the encrypted OAuth credentials in its database so
+          the connected account can be used until credentials are replaced or
+          removed by the operator. The code does not define an automatic deletion
+          period for Google tokens or general database records, and it does not
+          currently provide a self-service Google disconnect or data-deletion route.
+          Google results are handled for the active request; copies held by an AI
+          provider, infrastructure provider, logs, or backups are subject to those
+          providers' and the operator's actual settings, which are not determined
+          by this repository.</p>
+        <p>To stop future access, remove Vico AI from the connected account's
+          third-party connections in Google Account security settings. Revoking
+          Google permission may stop integration features but does not delete tokens
+          or other data already held by the service operator. To request access,
+          correction, or deletion of application-held information, contact
+          <a href="mailto:kimaniwilfred95@gmail.com">kimaniwilfred95@gmail.com</a>.
+          The operator will review the request under applicable law and explain any
+          limits on locating or removing data from active systems, logs, or backups.</p>
         <h3>Google API Services User Data Policy</h3>
         <p>Our use and transfer of information received from Google APIs will comply
           with the <a href="https://developers.google.com/terms/api-services-user-data-policy"
           rel="noopener noreferrer">Google API Services User Data Policy</a>, including
-          its Limited Use requirements. Google API data is not sold or used for
-          advertising. We do not permit Google API data to be used to serve
-          advertisements. Google API data is accessed, used, and transferred only as
-          necessary to provide or improve user-facing features, for security and
-          abuse prevention, to comply with applicable law, or with the account
-          owner’s consent. The application has no automated human-review feature.
-          This repository does not define the operator’s personnel access controls;
-          those controls must be established and followed. Human access must be
-          limited to what is allowed by the Google policy, such as with the account
-          owner’s explicit consent, when necessary for security or legal compliance,
-          or for limited internal operations using aggregated and anonymized data.
-          Any transfer to an AI provider is to generate a response requested by the
-          user, not for advertising or unrelated purposes.</p>
+          its Limited Use requirements. In particular, Vico AI will not use or
+          transfer Google user data for serving advertisements, including
+          retargeting, personalized, or interest-based advertising; will not allow
+          humans to read the data except with the account owner's affirmative
+          agreement, when necessary for security purposes, to comply with applicable
+          law, or for internal operations permitted by the policy using aggregated
+          and anonymized data; and will not use or transfer the data to create,
+          train, or improve a generalized AI or machine-learning model. Any transfer
+          to an AI provider described above is limited to generating the response
+          requested by the user and must comply with the policy's Limited Use
+          restrictions.</p>
       </section>
 
       <section id="use">

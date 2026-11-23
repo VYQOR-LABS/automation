@@ -33,6 +33,21 @@ test('serves public HTML pages with canonical URLs and working internal links', 
       assert.match(body, /<html lang="en">/);
       assert.match(body, new RegExp(page.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.ok(body.includes(page.section));
+      if (page.url === '/privacy-policy') {
+        for (const disclosure of [
+          'https://www.googleapis.com/auth/calendar.events',
+          'https://www.googleapis.com/auth/gmail.readonly',
+          'https://www.googleapis.com/auth/gmail.send',
+          'Data accessed and why',
+          'Storage and protection',
+          'Sharing and transfers of Google user data',
+          'Retention, revocation, and deletion of Google data',
+          'Limited Use requirements',
+          'kimaniwilfred95@gmail.com',
+        ]) {
+          assert.ok(body.includes(disclosure), `privacy policy omits ${disclosure}`);
+        }
+      }
       const canonicalUrl = new URL(page.url, config.appBaseUrl).href;
       assert.ok(body.includes(`<link rel="canonical" href="${canonicalUrl}">`));
       assert.ok(!body.includes('__CANONICAL_URL__'));
@@ -49,6 +64,19 @@ test('serves public HTML pages with canonical URLs and working internal links', 
     const favicon = await fetch(new URL('/favicon.svg', baseUrl));
     assert.equal(favicon.status, 200);
     assert.match(favicon.headers.get('content-type') ?? '', /^image\/svg\+xml/);
+
+    const googleVerification = await fetch(
+      new URL('/google4abf06ccc560e434.html', baseUrl),
+    );
+    assert.equal(googleVerification.status, 200);
+    assert.equal(
+      googleVerification.headers.get('content-type'),
+      'text/html; charset=utf-8',
+    );
+    assert.equal(
+      await googleVerification.text(),
+      'google-site-verification: google4abf06ccc560e434.html',
+    );
   } finally {
     await app.close();
   }

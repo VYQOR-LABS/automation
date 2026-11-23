@@ -27,6 +27,14 @@ test('Google API request URL is extracted from upstream errors', () => {
     'GOOGLE_ACCOUNT_NOT_CONNECTED',
     'Authorize Google first.',
   )), undefined);
+  assert.equal(
+    getGoogleRequestUrl({
+      config: {
+        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=private+search&maxResults=5#response',
+      },
+    }),
+    'https://gmail.googleapis.com/gmail/v1/users/me/messages',
+  );
 });
 
 function createCalendarService(

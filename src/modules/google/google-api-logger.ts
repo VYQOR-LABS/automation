@@ -32,7 +32,23 @@ export function getGoogleRequestUrl(error: unknown): string | undefined {
     (candidate) => typeof candidate === 'string' || candidate instanceof URL,
   );
 
-  return requestUrl instanceof URL ? requestUrl.toString() : requestUrl as string | undefined;
+  if (!requestUrl) {
+    return undefined;
+  }
+
+  try {
+    const url = requestUrl instanceof URL ? new URL(requestUrl) : new URL(requestUrl);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 function getErrorMetadata(error: unknown) {
