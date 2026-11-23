@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Privacy policy for Vico AI, including Google Calendar and Gmail integrations.">
+  <link rel="canonical" href="__CANONICAL_URL__">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title>Privacy Policy | Vico AI</title>
   <style>
     :root {
@@ -43,6 +45,8 @@
     .toc h2 { margin: 0 0 .5rem; padding: 0; border: 0; font-size: 1.2rem; }
     .toc ol { columns: 2; column-gap: 2rem; padding-left: 1.3rem; }
     .toc li { break-inside: avoid; }
+    .site-nav { display: flex; flex-wrap: wrap; gap: .75rem 1.4rem; padding-bottom: 1.2rem; border-bottom: 1px solid #e1e7ee; }
+    .site-nav a { font-weight: 650; }
     @media (max-width: 600px) {
       .page { width: min(100% - 1rem, 920px); margin: .5rem auto; }
       .toc ol { columns: 1; }
@@ -58,16 +62,22 @@
 <body>
   <div class="page">
     <header>
+      <nav class="site-nav" aria-label="Main navigation">
+        <a href="/">Home</a>
+        <a href="/privacy-policy" aria-current="page">Privacy Policy</a>
+        <a href="/terms-of-service">Terms of Service</a>
+      </nav>
       <p class="eyebrow">Vico AI</p>
       <h1>Privacy Policy</h1>
       <p class="muted">Effective date: November 23, 2026 · Last updated: November 23, 2026</p>
       <div class="notice" role="note">
-        <strong>Publication draft:</strong> Before publishing, replace the bracketed
-        operator and contact details below, confirm the applicable legal requirements,
-        and review the service's deployment and data-retention configuration.
+        <strong>Service limitation:</strong> Vico AI currently uses one shared
+        application-owner context and does not provide built-in authentication for
+        its general API routes. Review the access-control and retention disclosures
+        below before providing personal or Google account data.
       </div>
-      <p>This policy explains how <strong>[Operator’s full legal name]</strong> (“Vico AI,”
-        “we,” “us,” or “our”) handles information when you interact with the Vico AI
+      <p>This policy explains how the Vico AI service operator (“we,” “us,” or “our”)
+        handles information when you interact with the Vico AI
         assistant and its connected services.</p>
     </header>
 
@@ -147,10 +157,26 @@
           <code>calendar.events</code>, <code>gmail.readonly</code>, and
           <code>gmail.send</code>. Offline access lets the service refresh access
           credentials without asking the account owner to authorize every request.</p>
+        <ul>
+          <li><strong>Calendar:</strong> the
+            <code>https://www.googleapis.com/auth/calendar.events</code> scope allows
+            the service to view and manage Calendar events. Current user-facing
+            functionality includes looking up events in the primary calendar; other
+            write operations are implemented in service code but are not necessarily
+            exposed in every deployment.</li>
+          <li><strong>Gmail:</strong> the
+            <code>https://www.googleapis.com/auth/gmail.readonly</code> scope allows
+            the service to find and read messages, including message headers, snippets,
+            and body content returned by Gmail. The
+            <code>https://www.googleapis.com/auth/gmail.send</code> scope permits
+            sending messages; sending functionality exists in the service layer and
+            its availability depends on the configured workflow.</li>
+        </ul>
         <p>We use Google API data only to provide and maintain the user-facing features
           requested through this service, such as finding Calendar events, looking up
           Gmail messages, and carrying out permitted actions. We do not use Google API
-          data for advertising, sell it, or use it to build advertising profiles.
+          data for advertising or use it to build advertising profiles. Google API
+          data is not sold.
           Access is limited to the scopes granted by the account owner and to the
           application features that use them.</p>
         <h3>Token storage and handling</h3>
@@ -163,14 +189,32 @@
           OAuth callback response. Operators must protect both the database and the
           encryption key; encryption does not protect data from a compromised running
           application or an operator with access to the key.</p>
+        <p>Tokens and integration metadata are stored in the operator-configured
+          PostgreSQL database. The application also defines database records for
+          owner, conversation, message, memory, approval, and audit information;
+          whether a particular request or content is persisted depends on the
+          processing path. Application logs contain operational metadata, and the
+          HTTP logger records response bodies for some routes while explicitly
+          redacting OAuth, public-page, and selected private integration responses.
+          Actual database, log, backup, and host access and retention are controlled
+          by the operator's deployment.</p>
         <h3>Google API Services User Data Policy</h3>
         <p>Our use and transfer of information received from Google APIs will comply
           with the <a href="https://developers.google.com/terms/api-services-user-data-policy"
           rel="noopener noreferrer">Google API Services User Data Policy</a>, including
           its Limited Use requirements. Google API data is not sold or used for
-          advertising. It is accessed and transferred only as needed to provide or
-          improve user-facing features, for security and abuse prevention, to comply
-          with applicable law, or with the account owner’s consent.</p>
+          advertising. We do not permit Google API data to be used to serve
+          advertisements. Google API data is accessed, used, and transferred only as
+          necessary to provide or improve user-facing features, for security and
+          abuse prevention, to comply with applicable law, or with the account
+          owner’s consent. The application has no automated human-review feature.
+          This repository does not define the operator’s personnel access controls;
+          those controls must be established and followed. Human access must be
+          limited to what is allowed by the Google policy, such as with the account
+          owner’s explicit consent, when necessary for security or legal compliance,
+          or for limited internal operations using aggregated and anonymized data.
+          Any transfer to an AI provider is to generate a response requested by the
+          user, not for advertising or unrelated purposes.</p>
       </section>
 
       <section id="use">
@@ -212,13 +256,15 @@
             remote address; a remote Ollama deployment can be operated by a separate
             organization. The provider’s own privacy terms and configuration govern
             its processing.</li>
-          <li><strong>Service infrastructure:</strong> the operator’s database,
-            application host, and logging systems process information needed to run
-            the deployment. The operator should identify its actual hosting providers
-            and their locations in this policy before publication.</li>
+          <li><strong>Service infrastructure:</strong> for the Render deployment,
+            Render hosts the application. The configured PostgreSQL database,
+            Redis-backed queue infrastructure, and logging systems may also process
+            information needed to run the service. This repository does not identify
+            the database and Redis providers or their data locations.</li>
         </ul>
-        <p>We do not sell personal information. We do not disclose Google API data to
-          an AI provider for advertising. Where a user asks the assistant to answer
+        <p>This application has no feature for selling personal information. The
+          repository does not establish other operator-level business data practices.
+          Google API data is not disclosed to an AI provider for advertising. Where a user asks the assistant to answer
           using retrieved Google information, relevant request context and tool results
           may be included in the AI-provider request so it can produce a response.
           Check the selected provider and its data terms before using the service with
@@ -239,21 +285,29 @@
           automatic deletion schedule for stored records. Do not assume that deleting
           a message, revoking Google access, or disconnecting a platform automatically
           deletes information already stored in the application database, logs, or
-          backups. The operator must have a process to locate and delete eligible data
-          and should state its real retention periods here before publication.</p>
-        <p>Revoking access in your Google Account stops future API access after the
-          revocation takes effect, but it does not by itself erase tokens or other
-          data already held by the service operator. Contact the operator to request
-          deletion of stored integration data.</p>
+          backups. Pending approvals expire after the configured approval interval
+          (10 minutes by default); this does not mean all associated records are
+          deleted.</p>
+        <p>To disconnect Google, open your Google Account's third-party connections
+          or security settings and revoke Vico AI's access. The application currently
+          has no self-service disconnect route. Revoking access in Google stops
+          future API access after the revocation takes effect, but it does not by
+          itself erase tokens or other data already held by the service operator.
+          Contact the privacy email below
+          to request access, correction, or deletion of stored information. The
+          operator must assess requests under applicable law and its ability to
+          identify and remove data from active systems, logs, and backups; no
+          automatic deletion guarantee is made here.</p>
       </section>
 
       <section id="security">
         <h2>7. Security</h2>
-        <p>The application encrypts Google OAuth tokens at rest in the database and
-          uses a state value protected by a short-lived HttpOnly cookie to protect the
-          OAuth callback. Logs are designed to record operational metadata rather than
-          message or Calendar contents. Diagnostic logging may include request and
-          error metadata; access to logs, databases, backups, application hosts, and
+        <p>The application encrypts Google OAuth tokens at rest in the database using
+          AES-256-GCM with an operator-managed key, and uses a state value protected
+          by a short-lived HttpOnly cookie to protect the OAuth callback. This is not
+          a claim that all personal information is encrypted at rest. Diagnostic
+          logs record request and operation metadata; responses from some routes may
+          also be logged. Access to logs, databases, backups, application hosts, and
           encryption keys must be restricted and monitored by the operator.</p>
         <p>No method of storage or transmission is completely secure. The application
           currently lacks built-in authentication for general HTTP API endpoints, so
@@ -265,8 +319,9 @@
         <h2>8. Your choices and privacy rights</h2>
         <ul>
           <li><strong>Google permissions:</strong> review or revoke the application’s
-            access in your Google Account security settings. Revocation may stop
-            Calendar and Gmail features.</li>
+            access in your Google Account's third-party connections or security
+            settings. Revocation may stop Calendar and Gmail features. It does not
+            remove previously stored application data.</li>
           <li><strong>WhatsApp:</strong> stop sending messages to the connected
             business number to stop initiating new WhatsApp requests. This does not
             erase prior records.</li>
@@ -275,10 +330,12 @@
             sensitive information.</li>
           <li><strong>Requests:</strong> depending on your location, you may have
             rights to access, correct, delete, restrict, or object to certain
-            processing, or to complain to a data protection authority. Contact the
-            operator using the details in the Contact section. We may need to verify
-            your identity and may be unable to fulfill a request where an exception
-            applies.</li>
+            processing, request portability, withdraw consent where processing
+            relies on consent, or complain to a data protection authority. Contact
+            the privacy email below and specify the request and relevant account or
+            message identifiers without sending passwords or access tokens. The
+            operator may need to verify identity and may be unable to fulfill a
+            request where an exception applies.</li>
         </ul>
         <p>The service is configured around a shared account and does not currently
           provide user-level controls for separating one person’s access from another.
@@ -314,19 +371,24 @@
       <section id="contact">
         <h2>12. Contact</h2>
         <address>
-          <strong>[Operator’s full legal name]</strong><br>
-          Privacy contact: [privacy-contact-email]<br>
-          Postal address: [Operator’s notice address]<br>
-          Jurisdiction: [Country and, if applicable, state or province]
+          <strong>Vico AI privacy contact</strong><br>
+          Email: <a href="mailto:kimaniwilfred95@gmail.com">kimaniwilfred95@gmail.com</a><br>
+          Phone: <a href="tel:+254791614036">+254 791 614 036</a>
         </address>
       </section>
     </main>
 
     <footer>
+      <nav class="site-nav" aria-label="Footer navigation">
+        <a href="/">Home</a>
+        <a href="/privacy-policy" aria-current="page">Privacy Policy</a>
+        <a href="/terms-of-service">Terms of Service</a>
+      </nav>
       <p>See also the <a href="/terms-of-service">Vico AI Terms of Service</a>.
-        This document is a service-specific draft and is not legal advice. Have
-        qualified counsel review it for the operator’s actual business, deployment,
-        jurisdictions, and processing practices.</p>
+        The operator's legal entity, hosting locations, applicable jurisdictions,
+        and retention configuration are not identified in this repository and should
+        be confirmed before treating this policy as complete. This policy is not legal
+        advice.</p>
     </footer>
   </div>
 </body>

@@ -138,6 +138,24 @@ function buildOAuthStateCookie(state: string, secure: boolean, clear = false) {
   ].filter(Boolean).join('; ');
 }
 
+async function sendPublicHtml(
+  reply: FastifyReply,
+  filename: string,
+  canonicalPath: string,
+) {
+  const html = await readFile(resolve(process.cwd(), 'public', filename), 'utf8');
+  const baseUrl = new URL(config.appBaseUrl);
+  if (baseUrl.protocol !== 'http:' && baseUrl.protocol !== 'https:') {
+    throw new Error('APP_BASE_URL must use HTTP or HTTPS.');
+  }
+  const canonicalUrl = new URL(canonicalPath, baseUrl).href
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;');
+  return reply
+    .type('text/html; charset=utf-8')
+    .send(html.replace('__CANONICAL_URL__', canonicalUrl));
+}
+
 type GoogleAuthServiceContract = Pick<
   GoogleAuthService,
   | 'beginAuthorization'
@@ -271,8 +289,10 @@ export async function buildApp(
       callbackPath === '/api/google/connect' ||
       callbackPath === '/api/google/auth-url';
     const isLegalPage =
+      callbackPath === '/' ||
       callbackPath === '/privacy-policy' ||
-      callbackPath === '/terms-of-service';
+      callbackPath === '/terms-of-service' ||
+      callbackPath === '/favicon.svg';
     const containsPrivateGoogleData =
       callbackPath === '/api/google/calendar/events' ||
       callbackPath.startsWith('/api/google/gmail/') ||
@@ -2108,19 +2128,18 @@ export async function buildApp(
     },
   );
   };
+  app.get('/', async (_request, reply) => {
+    return sendPublicHtml(reply, 'index.html', '/');
+  });
   app.get('/privacy-policy', async (_request, reply) => {
-    const html = await readFile(
-      resolve(process.cwd(), 'public', 'privacy-policy.html'),
-      'utf8',
-    );
-    return reply.type('text/html; charset=utf-8').send(html);
+    return sendPublicHtml(reply, 'privacy-policy.html', '/privacy-policy');
   });
   app.get('/terms-of-service', async (_request, reply) => {
-    const html = await readFile(
-      resolve(process.cwd(), 'public', 'terms-of-service.html'),
-      'utf8',
-    );
-    return reply.type('text/html; charset=utf-8').send(html);
+    return sendPublicHtml(reply, 'terms-of-service.html', '/terms-of-service');
+  });
+  app.get('/favicon.svg', async (_request, reply) => {
+    const favicon = await readFile(resolve(process.cwd(), 'public', 'favicon.svg'));
+    return reply.type('image/svg+xml').send(favicon);
   });
 
   app.register(registerApiRoutes);

@@ -3,6 +3,16 @@ import type { AiProviderSettings } from './modules/ai/provider.js';
 
 dotenv.config();
 
+const appBaseUrl = process.env.APP_BASE_URL ??
+  process.env.RENDER_EXTERNAL_URL ??
+  'http://localhost:3000';
+const configuredPublicBaseUrl = process.env.APP_BASE_URL ?? process.env.RENDER_EXTERNAL_URL;
+const googleRedirectUri = process.env.GOOGLE_REDIRECT_URI ?? (
+  configuredPublicBaseUrl
+    ? new URL('/google/redirect', configuredPublicBaseUrl).toString()
+    : 'http://localhost:3020/google/redirect'
+);
+
 function positiveInteger(value: string | undefined, defaultValue: number, name: string) {
   const parsed = value === undefined ? defaultValue : Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
@@ -78,7 +88,7 @@ export const config = {
   redisHost: process.env.REDIS_HOST ?? '127.0.0.1',
   redisPort: Number(process.env.REDIS_PORT ?? 6379),
   appName: process.env.APP_NAME ?? 'Vico AI',
-  appBaseUrl: process.env.APP_BASE_URL ?? 'http://localhost:3000',
+  appBaseUrl,
   ...loadAiConfig(),
   embeddingModel: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small',
   whatsappApiVersion: process.env.WHATSAPP_API_VERSION ?? 'v25.0',
@@ -89,7 +99,7 @@ export const config = {
   googleClientId: process.env.GOOGLE_CLIENT_ID ?? '',
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
   googleRefreshToken: process.env.GOOGLE_REFRESH_TOKEN ?? '',
-  googleRedirectUri: process.env.GOOGLE_REDIRECT_URI ?? 'http://localhost:3020/google/redirect',
+  googleRedirectUri,
   googleTokenEncryptionKey: process.env.GOOGLE_TOKEN_ENCRYPTION_KEY ?? '',
   jwtSecret: process.env.JWT_SECRET ?? 'development-secret',
   features: {

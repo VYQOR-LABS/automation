@@ -113,9 +113,11 @@ successful. If authorization is revoked, reconnect through
 The backend refreshes expired access tokens using the stored refresh token and
 persists updated credentials before returning an authenticated client. The
 configured `GOOGLE_REDIRECT_URI` must exactly match the URI registered in Google
-Cloud Console; the existing default is
-`http://localhost:3020/google/redirect`. These API routes do not require a
-Google bearer token from the caller.
+Cloud Console. Locally, the default is
+`http://localhost:3020/google/redirect`. On Render, when `GOOGLE_REDIRECT_URI` is
+not explicitly set, it is derived from `APP_BASE_URL` or Render's
+`RENDER_EXTERNAL_URL`. These API routes do not require a Google bearer token from
+the caller.
 
 The PostgreSQL migrations must be applied before connecting Google. This
 application currently has no API authentication middleware. Any caller
@@ -124,6 +126,39 @@ Google account data. Keep those routes behind a
 trusted private network or add an application authentication boundary before
 public deployment. The OAuth state cookie prevents callback CSRF; it does not
 authenticate the operator or protect the Calendar/AI endpoints.
+
+### Public website and Google OAuth branding
+
+The HTML homepage, privacy policy, and terms are publicly served at `/`,
+`/privacy-policy`, and `/terms-of-service`. The application uses
+`APP_BASE_URL` for their canonical URLs; on Render it falls back to
+`RENDER_EXTERNAL_URL` when `APP_BASE_URL` is unset. Set `APP_BASE_URL` to the
+verified public HTTPS origin when using a custom domain. The Docker image must
+include the `public/` directory, which the repository Dockerfile copies.
+
+Configure Google Cloud Console to match the verified public site:
+
+- OAuth consent screen application name: `Vico AI`.
+- Application homepage: `https://<verified-domain>/`.
+- Privacy policy: `https://<verified-domain>/privacy-policy`.
+- Authorized domain: the owned registrable domain (for example, `example.com`,
+  with no scheme, path, or port).
+- OAuth web client authorized redirect URI:
+  `https://<verified-domain>/google/redirect`.
+
+Replace `<verified-domain>` with the public host under a domain the operator owns
+and has verified in Google Search Console. A Render `*.onrender.com` hostname is
+Render's domain and does not establish ownership of a custom domain. For a
+custom domain, configure it in Render, set `APP_BASE_URL` to its HTTPS origin, set
+`GOOGLE_REDIRECT_URI` to the exact callback URI above, and register that exact
+URI in the OAuth client. The alternative callback path
+`/api/google/callback` is supported by the app but should not be registered
+unless intentionally used.
+
+The public pages do not add authentication to or change the behavior of API
+routes. This application currently has no built-in HTTP authentication
+middleware; all API endpoints require deployment-level network restrictions or
+an upstream authentication boundary.
 
 ### Risk-based approvals
 

@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Vico AI is an AI-powered assistant for conversations and information across connected services.">
+  <link rel="canonical" href="__CANONICAL_URL__">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <title>Vico AI | AI assistant for connected services</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.65;
+      color: #202b38;
+      background: #f3f6fa;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    a { color: #0759a5; text-underline-offset: .18em; }
+    a:focus-visible { outline: 3px solid #e08b00; outline-offset: 3px; }
+    .page { width: min(100% - 2rem, 1100px); margin: 1.5rem auto; }
+    header, main, footer {
+      background: #fff;
+      border: 1px solid #dce4ed;
+      border-radius: 12px;
+      padding: clamp(1.25rem, 4vw, 3rem);
+    }
+    header { border-top: 6px solid #145da0; margin-bottom: 1rem; }
+    main { margin-bottom: 1rem; }
+    footer { color: #465466; font-size: .95rem; }
+    .site-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem 1.4rem;
+      padding-bottom: 1.2rem;
+      border-bottom: 1px solid #e1e7ee;
+    }
+    .site-nav a { font-weight: 650; }
+    .brand { display: flex; align-items: center; gap: .75rem; margin-top: 2rem; }
+    .brand img { width: 42px; height: 42px; }
+    .brand-name { color: #17283b; font-size: 1.15rem; font-weight: 750; }
+    h1, h2, h3 { line-height: 1.25; color: #17283b; }
+    h1 { max-width: 18ch; margin: .65rem 0 1rem; font-size: clamp(2.2rem, 6vw, 4.2rem); }
+    h2 { margin-top: 2.4rem; }
+    h3 { margin-bottom: .3rem; }
+    p, li { max-width: 78ch; }
+    .lede { max-width: 68ch; color: #43556a; font-size: clamp(1.1rem, 2vw, 1.3rem); }
+    .eyebrow { color: #4b5e73; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .muted { color: #536274; }
+    .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+    .card { padding: 1.2rem; background: #f5f8fc; border: 1px solid #dce4ed; border-radius: 10px; }
+    .card h3 { margin-top: 0; }
+    .status { display: inline-block; padding: .15rem .55rem; border-radius: 99px; font-size: .82rem; font-weight: 700; }
+    .available { color: #165a35; background: #e7f5ec; }
+    .limited { color: #704300; background: #fff2d7; }
+    .notice { border-left: 4px solid #a35400; background: #fff7e8; padding: 1rem 1.2rem; }
+    .contact { padding: 1.2rem; background: #f5f8fc; border-radius: 8px; }
+    address { font-style: normal; }
+    @media (max-width: 760px) { .cards { grid-template-columns: 1fr; } }
+    @media (max-width: 600px) {
+      .page { width: min(100% - 1rem, 1100px); margin: .5rem auto; }
+      .site-nav { gap: .6rem 1rem; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
+    @media print {
+      :root { background: #fff; }
+      .page { width: 100%; margin: 0; }
+      header, main, footer { border: 0; padding: 0; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <nav class="site-nav" aria-label="Main navigation">
+        <a href="/" aria-current="page">Home</a>
+        <a href="/privacy-policy">Privacy Policy</a>
+        <a href="/terms-of-service">Terms of Service</a>
+      </nav>
+      <div class="brand">
+        <img src="/favicon.svg" alt="" width="42" height="42">
+        <span class="brand-name">Vico AI</span>
+      </div>
+      <p class="eyebrow">Assistant for connected services</p>
+      <h1>Conversations and information, brought together.</h1>
+      <p class="lede">Vico AI is an AI-powered assistant designed to help users manage
+        conversations and information across connected services. It can work with
+        messaging and, when authorized, Google Calendar and Gmail to help retrieve
+        relevant information and respond to requests.</p>
+      <p class="muted">Vico AI is an evolving backend service. Available functions
+        depend on the operator’s configuration, connected accounts, and access
+        controls.</p>
+    </header>
+
+    <main id="content">
+      <section aria-labelledby="how-title">
+        <h2 id="how-title">How Vico AI works</h2>
+        <p>Vico AI receives a message or API request, identifies supported tasks,
+          and uses the configured AI provider to prepare a response. Where a request
+          calls for connected information, the service can use an authorized
+          integration to retrieve that information. The AI provider may receive the
+          request and relevant results so it can produce a response.</p>
+        <p>The service is currently configured around one shared application-owner
+          context and one shared Google account. It is not a consumer sign-up product
+          with separate accounts and isolated data for each person.</p>
+      </section>
+
+      <section aria-labelledby="features-title">
+        <h2 id="features-title">Available capabilities</h2>
+        <div class="cards">
+          <article class="card">
+            <span class="status available">Implemented</span>
+            <h3>WhatsApp messaging integration</h3>
+            <p>The backend supports configured WhatsApp Business Platform webhook
+              processing, outbound text and template messages, and message-template
+              and phone-number management. Meta account setup, permissions, and
+              eligibility are required.</p>
+          </article>
+          <article class="card">
+            <span class="status available">Implemented</span>
+            <h3>Google Calendar</h3>
+            <p>After the account owner authorizes Google, the backend can look up
+              events in the connected account’s primary Calendar. The OAuth service
+              also requests permission to manage Calendar events; availability of
+              event changes depends on the configured application workflow.</p>
+          </article>
+          <article class="card">
+            <span class="status available">Implemented</span>
+            <h3>Gmail and AI responses</h3>
+            <p>The integration supports Gmail message search and retrieval, with
+              Gmail sending implemented in the service layer. AI responses can use
+              supported tool results and the AI provider configured by the operator.
+              User-facing availability depends on the deployment.</p>
+          </article>
+        </div>
+      </section>
+
+      <section aria-labelledby="authorization-title">
+        <h2 id="authorization-title">Connected accounts and authorization</h2>
+        <p>Google features require an account owner to complete Google’s OAuth
+          consent flow. The current OAuth request asks for Calendar event access,
+          Gmail read access, and Gmail send access. Vico AI stores OAuth tokens
+          encrypted in its configured database and uses them to make authorized
+          requests to Google. The connected Google account is shared by this
+          application deployment.</p>
+        <p>WhatsApp features require the operator to configure a WhatsApp Business
+          phone number, account identifiers, and credentials. WhatsApp webhook
+          signatures authenticate the platform request; they do not prove that the
+          sender is the owner or authorize access to private Google information.</p>
+        <p>Users should connect only accounts they own or are authorized to grant.
+          Google access can be revoked in the Google Account’s third-party
+          connections settings. Revoking access may stop Google features and does
+          not by itself delete information already held by the service operator.</p>
+      </section>
+
+      <section aria-labelledby="development-title">
+        <h2 id="development-title">Current limitations and unavailable features</h2>
+        <div class="notice" role="note">
+          <p><strong>Important:</strong> The application currently has no built-in
+            HTTP authentication for its general API routes and uses a shared owner
+            context. The operator must restrict network access or provide an
+            authentication boundary before exposing the deployment to users or the
+            public internet.</p>
+        </div>
+        <ul>
+          <li>Separate user accounts and per-user isolation for Google and assistant
+            data are not currently available.</li>
+          <li>A self-service Google disconnect and data-deletion interface is not
+            currently implemented.</li>
+          <li>General HTTP API authentication is not currently implemented by this
+            application; deployment-level access controls are required.</li>
+          <li>Calendar event changes and Gmail sending exist in backend service
+            code, but are not exposed as general user-facing API routes in the
+            current backend. Do not assume those actions are available.</li>
+        </ul>
+        <p>This page describes the implementation currently present in this
+          repository, not a feature roadmap.</p>
+        <p>Do not use the Service for information or workflows that require
+          account-level isolation, authentication, or retention controls that the
+          operator has not independently configured.</p>
+      </section>
+
+      <section aria-labelledby="contact-title">
+        <h2 id="contact-title">Contact</h2>
+        <div class="contact">
+          <address>
+            <strong>Vico AI</strong><br>
+            Email: <a href="mailto:kimaniwilfred95@gmail.com">kimaniwilfred95@gmail.com</a><br>
+            Phone: <a href="tel:+254791614036">+254 791 614 036</a>
+          </address>
+        </div>
+        <p>For information about how personal information is handled, see the
+          <a href="/privacy-policy">Privacy Policy</a>. For service terms, see the
+          <a href="/terms-of-service">Terms of Service</a>.</p>
+      </section>
+    </main>
+
+    <footer>
+      <nav class="site-nav" aria-label="Footer navigation">
+        <a href="/">Home</a>
+        <a href="/privacy-policy">Privacy Policy</a>
+        <a href="/terms-of-service">Terms of Service</a>
+      </nav>
+      <p>Vico AI is not affiliated with or endorsed by Google, Meta, or OpenAI.</p>
+    </footer>
+  </div>
+</body>
+</html>
