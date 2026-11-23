@@ -2,7 +2,6 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { config } from '../../config.js';
 
 const NONCE_LENGTH = 12;
-const AUTH_TAG_LENGTH = 16;
 
 function getEncryptionKey(encryptionKey: string) {
   const key = Buffer.from(encryptionKey, 'base64');

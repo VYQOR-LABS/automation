@@ -48,36 +48,79 @@ persistence log only operation metadata and timings. Tokens, authorization
 codes, email contents, calendar event contents, and Gmail search queries are
 not included. The default `LOG_LEVEL=info` includes these lifecycle logs.
 
+### Single-owner configuration
+
+Vico AI uses one WhatsApp business phone and one Google account. Configure
+`WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`,
+`WHATSAPP_WEBHOOK_SECRET`, and `WHATSAPP_VERIFY_TOKEN`. The app creates or
+resolves one internal owner row in PostgreSQL and links it to the WhatsApp
+integration identified by the configured phone-number and business-account
+IDs. This internal UUID continues to back memory, approval, and audit foreign
+keys; `APP_OWNER_USER_ID` is not required.
+
+Meta webhook requests must have a valid `WHATSAPP_WEBHOOK_SECRET` signature and
+match the configured receiving phone-number and business-account IDs. Any
+sender can message the business number; sender phone numbers are not used as
+an authorization allowlist. All senders use the same owner context and can
+potentially trigger access to that owner's memory and connected Google data.
+The direct message ingest endpoint likewise accepts any sender only when its
+HMAC signature is valid. Keep these endpoints behind appropriate operational
+controls and monitor access.
+
+There are no user-registration or user-profile API routes. A valid Meta webhook
+signature proves the request came from Meta, not that the sender is the owner.
+The other HTTP API routes also have no authentication middleware. Keep
+Calendar, AI, messaging, and approval routes behind a trusted private network
+or an upstream authentication boundary.
+
 ### Google OAuth permissions
 
-Google is configured as one shared account for this deployment. The authorization
-URL requests `calendar.events`, `gmail.readonly`, and `gmail.send` with offline
-access and consent prompting. Configure `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, and
-`GOOGLE_TOKEN_ENCRYPTION_KEY`. Generate the encryption key outside the source
-tree (for example, `openssl rand -base64 32`) and provide it through the
-deployment secret manager. The key must decode from base64 to exactly 32 bytes.
-Do not reuse a key shared in chat or commit it to source control.
+Vico AI uses one shared Google account. Configure the OAuth application:
 
-Run `npm run db:migrate` against the existing PostgreSQL database to make
-`integration_accounts.user_id` nullable for the singleton connection and add
-the uniqueness constraint. Then open `GET /api/google/connect`, follow its
-`authUrl`, and complete Google's redirect to
-`http://localhost:3020/google/redirect` (or `GOOGLE_REDIRECT_URI`). The callback
-validates a short-lived HttpOnly state cookie, exchanges the authorization code,
-and stores encrypted access/refresh tokens and granted scopes in the existing
-`oauth_tokens` table. Tokens are never returned by the callback. A connected
-account is not silently replaced by another callback.
+```dotenv
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REFRESH_TOKEN=
+GOOGLE_REDIRECT_URI=http://localhost:3020/google/redirect
+GOOGLE_TOKEN_ENCRYPTION_KEY=
+```
 
-`GET /api/google/calendar/events` now uses the stored shared credentials and
-does not require a Google bearer token. Gmail search and the Gmail service's
-read/send methods use the same credentials. The backend refreshes expired
-access tokens and persists refreshed values while retaining a stored refresh
-token when Google omits a replacement.
+The Google client ID and secret identify the OAuth application; they do not
+authorize access to an account.
 
-This application currently has no API authentication middleware. Because the
-Google account is shared, any caller able to reach the AI or Calendar HTTP
-routes can potentially access that account's data. Keep those routes behind a
+`GET /api/google/connect` starts authorization. The URL requests offline access,
+the `calendar.events`, `gmail.readonly`, and `gmail.send` scopes, and includes
+previously granted scopes. Consent is prompted when neither a stored nor
+environment refresh token is available. Complete authorization in the same
+browser that called `/api/google/connect` so the HttpOnly OAuth state cookie is
+sent to `/google/redirect`. The callback validates the cookie before the
+existing Google OAuth client exchanges the code at
+`https://oauth2.googleapis.com/token`. The callback returns only a connection
+confirmation; raw tokens are never returned or logged.
+
+Google credentials are encrypted with AES-256-GCM using
+`GOOGLE_TOKEN_ENCRYPTION_KEY`, a base64-encoded 32-byte key. Keep this key
+stable and secret; changing or losing it makes persisted credentials
+undecryptable. Access and refresh tokens are stored encrypted in the shared
+`oauth_tokens` record. On startup, Gmail and Calendar load that record and
+decrypt credentials in memory. An optional `GOOGLE_REFRESH_TOKEN` is a bootstrap
+fallback when no stored connection exists. OAuth callback and refresh token
+responses must be persisted successfully before the operation is considered
+successful. If authorization is revoked, reconnect through
+`GET /api/google/connect`.
+
+`GET /api/google/calendar/events` and Gmail use the same in-memory credentials.
+The backend refreshes expired access tokens using the stored refresh token and
+persists updated credentials before returning an authenticated client. The
+configured `GOOGLE_REDIRECT_URI` must exactly match the URI registered in Google
+Cloud Console; the existing default is
+`http://localhost:3020/google/redirect`. These API routes do not require a
+Google bearer token from the caller.
+
+The PostgreSQL migrations must be applied before connecting Google. This
+application currently has no API authentication middleware. Any caller
+able to reach the AI or Calendar HTTP routes can potentially access the owner's
+Google account data. Keep those routes behind a
 trusted private network or add an application authentication boundary before
 public deployment. The OAuth state cookie prevents callback CSRF; it does not
 authenticate the operator or protect the Calendar/AI endpoints.
@@ -94,10 +137,12 @@ built-in checks.
 Pending actions are stored in the PostgreSQL `approval_requests` table and
 expire after `APPROVAL_TTL_MS` (10 minutes by default). Approve or reject a
 request with `POST /api/approvals/{approvalId}/decision`, sending the owner
-`userId` and a `decision` of `approve` or `reject`. Only the stored action and
-payload are used; repeated decisions do not execute an action again.
+`decision` of `approve` or `reject`. The application resolves the owner through
+the configured WhatsApp integration IDs;
+only the stored action and payload are used, and repeated decisions do not
+execute an action again.
 
-The decision endpoint expects an upstream-authenticated caller to supply the
-authenticated user ID. This application does not implement that authentication
-boundary itself. Sensitive Gmail sends and Calendar modifications/deletions
-continue to require the existing approval workflow.
+This application does not implement HTTP authentication. Keep the decision
+endpoint behind a trusted private network or an upstream authentication
+boundary. Sensitive Gmail sends and Calendar modifications/deletions continue
+to require the existing approval workflow.

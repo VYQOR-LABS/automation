@@ -6,6 +6,35 @@ type GoogleApiResponse<T> = {
   status?: number;
 };
 
+export function getGoogleRequestUrl(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) {
+    return undefined;
+  }
+
+  const properties = error as {
+    config?: { url?: unknown } | null;
+    response?: {
+      config?: { url?: unknown } | null;
+      request?: { responseURL?: unknown; responseUrl?: unknown } | null;
+    } | null;
+    request?: { responseURL?: unknown; responseUrl?: unknown; url?: unknown } | null;
+  };
+  const candidates = [
+    properties.config?.url,
+    properties.response?.config?.url,
+    properties.response?.request?.responseURL,
+    properties.response?.request?.responseUrl,
+    properties.request?.responseURL,
+    properties.request?.responseUrl,
+    properties.request?.url,
+  ];
+  const requestUrl = candidates.find(
+    (candidate) => typeof candidate === 'string' || candidate instanceof URL,
+  );
+
+  return requestUrl instanceof URL ? requestUrl.toString() : requestUrl as string | undefined;
+}
+
 function getErrorMetadata(error: unknown) {
   if (typeof error !== 'object' || error === null) {
     return {};
@@ -19,13 +48,15 @@ function getErrorMetadata(error: unknown) {
   return {
     ...(typeof statusCode === 'number' ? { statusCode } : {}),
     ...(typeof properties.code === 'string' ? { code: properties.code } : {}),
+    ...(getGoogleRequestUrl(error)
+      ? { requestUrl: getGoogleRequestUrl(error) }
+      : {}),
   };
 }
 
 export async function logGoogleApiRequest<T>(input: {
   service: 'calendar' | 'gmail';
   operation: string;
-  userId?: string;
   calendarId?: string;
   request: () => Promise<GoogleApiResponse<T>>;
   getResultCount?: (data: T) => number;
@@ -36,7 +67,6 @@ export async function logGoogleApiRequest<T>(input: {
     requestId,
     service: input.service,
     operation: input.operation,
-    ...(input.userId ? { userId: input.userId } : {}),
     ...(input.calendarId ? { calendarId: input.calendarId } : {}),
   };
 

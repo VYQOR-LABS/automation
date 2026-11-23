@@ -4,15 +4,11 @@ import type { OAuth2Client } from 'google-auth-library';
 import { config } from '../../config.js';
 import { logger } from '../../lib/logger.js';
 import {
-  assertGoogleTokenEncryptionKey,
-  decryptGoogleToken,
-  encryptGoogleToken,
-} from './google-token-crypto.js';
-import {
-  GoogleAccountAlreadyConnectedError,
-  GoogleTokenRepository,
-  type StoredGoogleTokens,
-} from './google-token.repository.js';
+  EncryptedGoogleTokenStore,
+  GoogleTokenStoreError,
+  type GoogleStoredCredentials,
+  type GoogleTokenStore,
+} from './google-token-store.js';
 
 export const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
@@ -25,14 +21,17 @@ const REFRESH_EARLY_MS = 60_000;
 
 export type GoogleAuthErrorCode =
   | 'GOOGLE_AUTH_NOT_CONFIGURED'
-  | 'GOOGLE_TOKEN_STORAGE_NOT_CONFIGURED'
   | 'GOOGLE_ACCOUNT_NOT_CONNECTED'
+  | 'GOOGLE_CREDENTIALS_NOT_FOUND'
+  | 'GOOGLE_CREDENTIALS_LOAD_FAILED'
+  | 'GOOGLE_TOKEN_DECRYPTION_FAILED'
+  | 'GOOGLE_REFRESH_TOKEN_MISSING'
+  | 'GOOGLE_TOKEN_PERSISTENCE_FAILED'
   | 'GOOGLE_AUTHORIZATION_REVOKED'
   | 'GOOGLE_MISSING_PERMISSIONS'
   | 'GOOGLE_TOKEN_REFRESH_FAILED'
   | 'GOOGLE_TOKEN_EXCHANGE_FAILED'
-  | 'GOOGLE_OAUTH_STATE_INVALID'
-  | 'GOOGLE_ACCOUNT_ALREADY_CONNECTED';
+  | 'GOOGLE_OAUTH_STATE_INVALID';
 
 export class GoogleAuthError extends Error {
   constructor(
@@ -55,10 +54,14 @@ type GoogleOAuthTokenSet = {
 type OAuthClientFactory = () => OAuth2Client;
 
 export class GoogleAuthService {
-  private readonly refreshInFlight = new Map<string, Promise<OAuth2Client>>();
+  private credentialsLoadInFlight: Promise<GoogleStoredCredentials | null> | undefined;
+  private refreshInFlight: Promise<OAuth2Client> | undefined;
+  private authenticatedClient: OAuth2Client | undefined;
+  private credentials: GoogleStoredCredentials | null = null;
+  private credentialsLoaded = false;
+  private refreshToken: string;
 
   constructor(
-    private readonly tokenRepository = new GoogleTokenRepository(),
     private readonly createOAuthClient: OAuthClientFactory = () => {
       if (!config.googleClientId || !config.googleClientSecret) {
         throw new GoogleAuthError(
@@ -72,28 +75,25 @@ export class GoogleAuthService {
         config.googleRedirectUri,
       );
     },
-    private readonly encryptionKey = config.googleTokenEncryptionKey,
-  ) {}
+    refreshToken = config.googleRefreshToken,
+    private readonly tokenStore: GoogleTokenStore = new EncryptedGoogleTokenStore(),
+  ) {
+    this.refreshToken = refreshToken;
+  }
 
   buildAuthUrl(state = randomBytes(32).toString('base64url')) {
     const oauth2Client = this.createOAuthClient();
     return oauth2Client.generateAuthUrl({
       access_type: 'offline',
-      prompt: 'consent',
+      ...(this.refreshToken.trim() ? {} : { prompt: 'consent' }),
+      include_granted_scopes: true,
       state,
       scope: [...GOOGLE_SCOPES],
     });
   }
 
-  beginAuthorization() {
-    try {
-      assertGoogleTokenEncryptionKey(this.encryptionKey);
-    } catch {
-      throw new GoogleAuthError(
-        'GOOGLE_TOKEN_STORAGE_NOT_CONFIGURED',
-        'Google token encryption is not configured. Set GOOGLE_TOKEN_ENCRYPTION_KEY to a base64-encoded 32-byte key.',
-      );
-    }
+  async beginAuthorization() {
+    await this.loadStoredCredentials(true);
     const state = randomBytes(32).toString('base64url');
     return { state, authUrl: this.buildAuthUrl(state) };
   }
@@ -104,14 +104,7 @@ export class GoogleAuthService {
     cookieState?: string;
   }) {
     this.validateAuthorizationState(input.state, input.cookieState);
-    try {
-      assertGoogleTokenEncryptionKey(this.encryptionKey);
-    } catch {
-      throw new GoogleAuthError(
-        'GOOGLE_TOKEN_STORAGE_NOT_CONFIGURED',
-        'Google token encryption is not configured.',
-      );
-    }
+    await this.loadStoredCredentials(true);
 
     const requestId = randomBytes(16).toString('hex');
     const startedAt = Date.now();
@@ -142,21 +135,23 @@ export class GoogleAuthService {
     }
 
     const scopes = this.parseScopes(tokens.scope);
-    if (!tokens.access_token || !tokens.refresh_token) {
+    const refreshToken = tokens.refresh_token?.trim() ||
+      this.credentials?.refreshToken || this.refreshToken;
+    if (!tokens.access_token || !refreshToken) {
       logger.error(
         {
           requestId,
           operation: 'oauth.token_exchange',
           endpoint: TOKEN_ENDPOINT,
           durationMs: Date.now() - startedAt,
-          reason: 'offline_credentials_missing',
+          reason: tokens.access_token ? 'refresh_token_missing' : 'access_token_missing',
           scopesGranted: scopes.length,
         },
         'Google OAuth token request returned incomplete credentials',
       );
       throw new GoogleAuthError(
         'GOOGLE_TOKEN_EXCHANGE_FAILED',
-        'Google did not provide the access and offline refresh credentials required.',
+        'Google did not provide usable access credentials. Reauthorize with offline access.',
       );
     }
     try {
@@ -176,40 +171,18 @@ export class GoogleAuthService {
       throw error;
     }
 
-    try {
-      await this.tokenRepository.createSharedTokens({
-        accessTokenEncrypted: encryptGoogleToken(tokens.access_token, this.encryptionKey),
-        refreshTokenEncrypted: encryptGoogleToken(tokens.refresh_token, this.encryptionKey),
-        expiresAt: this.expiryDate(tokens.expiry_date),
-        scopes,
-      });
-    } catch (error) {
-      if (error instanceof GoogleAccountAlreadyConnectedError) {
-        logger.warn(
-          {
-            requestId,
-            operation: 'oauth.token_storage',
-            durationMs: Date.now() - startedAt,
-            reason: 'shared_account_already_connected',
-          },
-          'Google OAuth credentials were not stored because a shared account already exists',
-        );
-        throw new GoogleAuthError(
-          'GOOGLE_ACCOUNT_ALREADY_CONNECTED',
-          'A shared Google account is already connected.',
-        );
-      }
-      logger.error(
-        {
-          requestId,
-          operation: 'oauth.token_storage',
-          durationMs: Date.now() - startedAt,
-          ...this.errorMetadata(error),
-        },
-        'Google OAuth credentials could not be stored',
-      );
-      throw error;
-    }
+    const storedCredentials: GoogleStoredCredentials = {
+      accessToken: tokens.access_token,
+      refreshToken,
+      expiresAt: this.expiryTimestamp(tokens.expiry_date),
+      scopes,
+      tokenType: tokens.token_type ?? 'Bearer',
+    };
+    await this.saveStoredCredentials(storedCredentials);
+    this.refreshToken = refreshToken;
+    this.credentials = storedCredentials;
+    this.credentialsLoaded = true;
+    this.authenticatedClient = this.createClientWithCredentials(storedCredentials);
 
     logger.info(
       {
@@ -218,9 +191,10 @@ export class GoogleAuthService {
         endpoint: TOKEN_ENDPOINT,
         durationMs: Date.now() - startedAt,
         scopesGranted: scopes.length,
-        refreshTokenStored: true,
+        refreshTokenReceived: Boolean(tokens.refresh_token),
+        refreshTokenPreserved: !tokens.refresh_token,
       },
-      'Google OAuth token request completed',
+      'Google OAuth authorization completed',
     );
     return { connected: true };
   }
@@ -234,86 +208,95 @@ export class GoogleAuthService {
     }
   }
 
-  async getAuthenticatedClient(userId = 'shared') {
-    try {
-      assertGoogleTokenEncryptionKey(this.encryptionKey);
-    } catch {
-      throw new GoogleAuthError(
-        'GOOGLE_TOKEN_STORAGE_NOT_CONFIGURED',
-        'Google token encryption is not configured.',
-      );
-    }
-
-    const startedAt = Date.now();
+  async getAuthenticatedGoogleClient() {
+    await this.loadStoredCredentials();
+    const authClientConfigured = Boolean(
+      config.googleClientId.trim() && config.googleClientSecret.trim(),
+    );
     logger.info(
-      { operation: 'oauth.credentials.get', userId },
+      {
+        operation: 'oauth.credentials.get',
+        authClientConfigured,
+        sharedIntegrationAccountFound: Boolean(this.credentials),
+        oauthTokenRecordFound: Boolean(this.credentials),
+        refreshTokenPresent: Boolean(this.refreshToken.trim()),
+        authenticatedClientPresent: Boolean(this.authenticatedClient),
+        inMemoryCredentialsPresent: Boolean(this.credentials),
+      },
       'Shared Google credentials lookup started',
     );
-    const current = await this.tokenRepository.findSharedTokens();
-    if (!current) {
-      logger.warn(
-        {
-          operation: 'oauth.credentials.get',
-          userId,
-          durationMs: Date.now() - startedAt,
-        },
-        'Shared Google credentials are not connected',
-      );
-      throw new GoogleAuthError(
-        'GOOGLE_ACCOUNT_NOT_CONNECTED',
-        'A shared Google account has not been connected.',
-      );
-    }
-    try {
-      this.assertRequiredScopes(current.scopes);
-    } catch (error) {
-      if (error instanceof GoogleAuthError &&
-        error.code === 'GOOGLE_MISSING_PERMISSIONS') {
-        await this.tokenRepository.markSharedAccountRevoked();
-      }
-      throw error;
-    }
-
-    if (current.expiresAt && current.expiresAt.getTime() > Date.now() + REFRESH_EARLY_MS) {
-      const client = this.createClientWithAccessToken(
-        this.decryptToken(current.accessTokenEncrypted),
-      );
+    if (this.credentials?.accessToken) {
+      const accessTokenValid = this.credentials.expiresAt !== null &&
+        this.credentials.expiresAt > Date.now() + REFRESH_EARLY_MS;
       logger.info(
         {
-          operation: 'oauth.credentials.get',
-          userId,
-          accountId: current.accountId,
-          durationMs: Date.now() - startedAt,
+          operation: 'oauth.credentials.validity',
+          accessTokenValid,
+          accessTokenExpiredOrExpiring: !accessTokenValid,
         },
-        'Shared Google credentials lookup completed',
+        accessTokenValid
+          ? 'Google access token is valid'
+          : 'Google access token is expired or approaching expiry',
       );
-      return client;
+      if (accessTokenValid) {
+        this.authenticatedClient ??= this.createClientWithCredentials(this.credentials);
+        logger.info(
+          { operation: 'oauth.credentials.client', created: true },
+          'Authenticated Google client created successfully',
+        );
+        return this.authenticatedClient;
+      }
+    }
+    if (!this.refreshToken.trim()) {
+      const code = this.credentials
+        ? 'GOOGLE_REFRESH_TOKEN_MISSING'
+        : 'GOOGLE_ACCOUNT_NOT_CONNECTED';
+      logger.error(
+        {
+          operation: 'oauth.credentials.get',
+          failureCode: code,
+          failureStage: 'refresh_token_precondition',
+          reason: 'refresh_token_missing',
+          authClientConfigured,
+          refreshTokenPresent: false,
+          authenticatedClientPresent: Boolean(this.authenticatedClient),
+          inMemoryCredentialsPresent: Boolean(this.credentials),
+        },
+        'Google credentials unavailable before API request',
+      );
+      throw new GoogleAuthError(
+        code,
+        code === 'GOOGLE_REFRESH_TOKEN_MISSING'
+          ? 'The stored Google credentials do not include a refresh token. Reauthorize Google.'
+          : 'A shared Google account is not connected. Start authorization at GET /api/google/connect.',
+      );
+    }
+    if (this.refreshInFlight) {
+      return this.refreshInFlight;
     }
 
-    const inFlight = this.refreshInFlight.get(current.accountId);
-    if (inFlight) {
-      return inFlight;
-    }
-
-    const refresh = this.refreshAndCreateClient(current.accountId, userId);
-    this.refreshInFlight.set(current.accountId, refresh);
+    const refresh = this.refreshAndCreateClient();
+    this.refreshInFlight = refresh;
     try {
-      return await refresh;
+      this.authenticatedClient = await refresh;
+      logger.info(
+        { operation: 'oauth.credentials.client', created: true },
+        'Authenticated Google client created successfully',
+      );
+      return this.authenticatedClient;
     } finally {
-      if (this.refreshInFlight.get(current.accountId) === refresh) {
-        this.refreshInFlight.delete(current.accountId);
+      if (this.refreshInFlight === refresh) {
+        this.refreshInFlight = undefined;
       }
     }
   }
 
-  private async refreshAndCreateClient(accountId: string, userId: string) {
+  private async refreshAndCreateClient() {
     const requestId = randomBytes(16).toString('hex');
     const startedAt = Date.now();
     logger.info(
       {
         requestId,
-        userId,
-        accountId,
         operation: 'oauth.refresh_token',
         endpoint: TOKEN_ENDPOINT,
       },
@@ -321,93 +304,66 @@ export class GoogleAuthService {
     );
 
     try {
-      const stored = await this.tokenRepository.refreshSharedTokens(
-        async (current: StoredGoogleTokens) => {
-          if (
-            current.expiresAt &&
-            current.expiresAt.getTime() > Date.now() + REFRESH_EARLY_MS
-          ) {
-            return {
-              accessTokenEncrypted: current.accessTokenEncrypted,
-              refreshTokenEncrypted: current.refreshTokenEncrypted ?? undefined,
-              expiresAt: current.expiresAt,
-              scopes: current.scopes,
-            };
-          }
-          if (!current.refreshTokenEncrypted) {
-            throw new GoogleAuthError(
-              'GOOGLE_AUTHORIZATION_REVOKED',
-              'Google offline authorization is no longer available. Reconnect the Google account.',
-            );
-          }
+      const client = this.createOAuthClient();
+      client.setCredentials({ refresh_token: this.refreshToken });
+      let credentials: OAuth2Client['credentials'];
+      try {
+        ({ credentials } = await client.refreshAccessToken());
+      } catch (error) {
+        if (this.isInvalidGrant(error)) {
+          throw new GoogleAuthError(
+            'GOOGLE_AUTHORIZATION_REVOKED',
+            'Google authorization was revoked or the refresh token expired. Reauthorize Google.',
+          );
+        }
+        throw error;
+      }
 
-          const client = this.createOAuthClient();
-          client.setCredentials({
-            refresh_token: this.decryptToken(current.refreshTokenEncrypted),
-          });
-          try {
-            const { credentials } = await client.refreshAccessToken();
-            if (!credentials.access_token) {
-              throw new Error('Google returned no access token during refresh.');
-            }
-            const scopes = credentials.scope
-              ? this.parseScopes(credentials.scope)
-              : current.scopes;
-            this.assertRequiredScopes(scopes);
-            return {
-              accessTokenEncrypted: encryptGoogleToken(
-                credentials.access_token,
-                this.encryptionKey,
-              ),
-              ...(credentials.refresh_token
-                ? {
-                    refreshTokenEncrypted: encryptGoogleToken(
-                      credentials.refresh_token,
-                      this.encryptionKey,
-                    ),
-                  }
-                : {}),
-              expiresAt: this.expiryDate(credentials.expiry_date),
-              scopes,
-            };
-          } catch (error) {
-            if (this.isInvalidGrant(error)) {
-              throw new GoogleAuthError(
-                'GOOGLE_AUTHORIZATION_REVOKED',
-                'Google authorization was revoked or the refresh token expired. Reconnect the Google account.',
-              );
-            }
-            throw error;
-          }
-        },
-      );
       logger.info(
         {
           requestId,
-          userId,
-          accountId,
+          operation: 'oauth.refresh_token',
+          endpoint: TOKEN_ENDPOINT,
+          tokenEndpointSucceeded: true,
+        },
+        'Google OAuth refresh request succeeded',
+      );
+      if (!credentials.access_token) {
+        throw new Error('Google returned no access token during refresh.');
+      }
+      const tokenInfo = credentials.scope && credentials.expiry_date
+        ? undefined
+        : await client.getTokenInfo(credentials.access_token);
+      const scopes = tokenInfo?.scopes ?? this.parseScopes(credentials.scope);
+      this.assertRequiredScopes(scopes);
+      const updatedCredentials: GoogleStoredCredentials = {
+        accessToken: credentials.access_token,
+        refreshToken: credentials.refresh_token?.trim() || this.refreshToken,
+        expiresAt: this.expiryTimestamp(credentials.expiry_date ?? tokenInfo?.expiry_date),
+        scopes,
+        tokenType: credentials.token_type ?? this.credentials?.tokenType ?? 'Bearer',
+      };
+      await this.saveStoredCredentials(updatedCredentials);
+      this.credentials = updatedCredentials;
+      this.refreshToken = updatedCredentials.refreshToken ?? '';
+
+      logger.info(
+        {
+          requestId,
           operation: 'oauth.refresh_token',
           endpoint: TOKEN_ENDPOINT,
           durationMs: Date.now() - startedAt,
+          scopesGranted: scopes.length,
+          refreshTokenRotated: Boolean(credentials.refresh_token),
+          tokenEndpointSucceeded: true,
         },
-        'Google OAuth refresh-token request completed',
+        'Shared Google credentials refreshed and ready for use',
       );
-      return this.createClientWithAccessToken(
-        this.decryptToken(stored.accessTokenEncrypted),
-      );
+      return this.createClientWithCredentials(updatedCredentials);
     } catch (error) {
-      if (
-        error instanceof GoogleAuthError &&
-        (error.code === 'GOOGLE_AUTHORIZATION_REVOKED' ||
-          error.code === 'GOOGLE_MISSING_PERMISSIONS')
-      ) {
-        await this.tokenRepository.markSharedAccountRevoked();
-      }
       logger.error(
         {
           requestId,
-          userId,
-          accountId,
           operation: 'oauth.refresh_token',
           endpoint: TOKEN_ENDPOINT,
           durationMs: Date.now() - startedAt,
@@ -425,21 +381,140 @@ export class GoogleAuthService {
     }
   }
 
-  private createClientWithAccessToken(accessToken: string) {
+  private async loadStoredCredentials(allowMissingTokenRecord = false) {
+    if (this.credentialsLoaded) {
+      return this.credentials;
+    }
+    if (this.credentialsLoadInFlight) {
+      return this.credentialsLoadInFlight;
+    }
+
+    const loading = (async () => {
+      const authClientConfigured = Boolean(
+        config.googleClientId.trim() && config.googleClientSecret.trim(),
+      );
+      logger.info(
+        {
+          operation: 'oauth.credentials.load',
+          authClientConfigured,
+          configuredRedirectUri: config.googleRedirectUri,
+        },
+        'Loading shared Google credentials',
+      );
+      try {
+        this.credentials = await this.tokenStore.getSharedCredentials();
+        if (this.credentials?.refreshToken) {
+          this.refreshToken = this.credentials.refreshToken;
+        }
+        this.credentialsLoaded = true;
+        logger.info(
+          {
+            operation: 'oauth.credentials.load',
+            sharedIntegrationAccountFound: Boolean(this.credentials),
+            oauthTokenRecordFound: Boolean(this.credentials),
+            refreshTokenPresent: Boolean(this.refreshToken.trim()),
+          },
+          this.credentials
+            ? 'Shared Google credentials loaded'
+            : 'No shared Google credentials found',
+        );
+        return this.credentials;
+      } catch (error) {
+        if (
+          allowMissingTokenRecord &&
+          error instanceof GoogleTokenStoreError &&
+          error.code === 'GOOGLE_CREDENTIALS_NOT_FOUND'
+        ) {
+          this.credentials = null;
+          this.credentialsLoaded = true;
+          logger.warn(
+            { operation: 'oauth.credentials.load', failureCode: error.code },
+            'No saved Google token record exists; OAuth authorization can create one',
+          );
+          return null;
+        }
+        logger.error(
+          {
+            operation: 'oauth.credentials.load',
+            ...this.errorMetadata(error),
+            databaseError: this.safeDatabaseErrorMessage(error, [
+              config.databaseUrl,
+              config.googleClientSecret,
+              config.googleRefreshToken,
+            ]),
+          },
+          'Shared Google credentials could not be loaded',
+        );
+        if (error instanceof GoogleTokenStoreError) {
+          throw new GoogleAuthError(error.code, error.message);
+        }
+        throw new GoogleAuthError(
+          'GOOGLE_CREDENTIALS_LOAD_FAILED',
+          'Shared Google credentials could not be loaded.',
+        );
+      }
+    })();
+    this.credentialsLoadInFlight = loading;
+    try {
+      return await loading;
+    } finally {
+      if (this.credentialsLoadInFlight === loading) {
+        this.credentialsLoadInFlight = undefined;
+      }
+    }
+  }
+
+  private async saveStoredCredentials(credentials: GoogleStoredCredentials) {
+    try {
+      await this.tokenStore.saveSharedCredentials({
+        ...credentials,
+        refreshToken: credentials.refreshToken ?? undefined,
+      });
+      logger.info(
+        {
+          operation: 'oauth.credentials.save',
+          credentialSource: 'oauth_token_endpoint',
+          accessTokenSaved: true,
+          refreshTokenSaved: Boolean(credentials.refreshToken),
+        },
+        'Google credentials persisted successfully',
+      );
+    } catch (error) {
+      logger.error(
+        {
+          operation: 'oauth.credentials.save',
+          accessTokenSaved: false,
+          refreshTokenSaved: false,
+          ...this.errorMetadata(error),
+          databaseError: this.safeDatabaseErrorMessage(error, [
+            credentials.accessToken,
+            credentials.refreshToken ?? '',
+            config.googleClientSecret,
+          ]),
+        },
+        'Google credentials could not be persisted',
+      );
+      throw new GoogleAuthError(
+        'GOOGLE_TOKEN_PERSISTENCE_FAILED',
+        'Google credentials could not be saved. Retry Google authorization.',
+      );
+    }
+  }
+
+  private createClientWithCredentials(credentials: GoogleStoredCredentials) {
     const client = this.createOAuthClient();
-    client.setCredentials({ access_token: accessToken });
+    client.setCredentials({
+      access_token: credentials.accessToken,
+      refresh_token: credentials.refreshToken ?? undefined,
+      expiry_date: credentials.expiresAt ?? undefined,
+      scope: credentials.scopes.join(' '),
+      token_type: credentials.tokenType ?? undefined,
+    });
     return client;
   }
 
-  private decryptToken(value: string) {
-    try {
-      return decryptGoogleToken(value, this.encryptionKey);
-    } catch {
-      throw new GoogleAuthError(
-        'GOOGLE_TOKEN_STORAGE_NOT_CONFIGURED',
-        'Stored Google credentials could not be decrypted. Check GOOGLE_TOKEN_ENCRYPTION_KEY.',
-      );
-    }
+  private expiryTimestamp(value: number | null | undefined) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
   }
 
   private assertRequiredScopes(scopes: readonly string[]) {
@@ -454,12 +529,6 @@ export class GoogleAuthService {
 
   private parseScopes(scope: string | null | undefined) {
     return scope?.split(/\s+/).filter(Boolean) ?? [];
-  }
-
-  private expiryDate(expiryDate: number | null | undefined) {
-    return typeof expiryDate === 'number' && Number.isFinite(expiryDate)
-      ? new Date(expiryDate)
-      : null;
   }
 
   private statesMatch(state: string, cookieState: string) {
@@ -483,13 +552,14 @@ export class GoogleAuthService {
 
   private errorMetadata(error: unknown) {
     if (typeof error !== 'object' || error === null) {
-      return {};
+      return { errorType: typeof error };
     }
     const properties = error as {
       code?: unknown;
       response?: { status?: unknown } | null;
     };
     return {
+      errorType: error instanceof Error ? error.name : 'UnknownError',
       ...(typeof properties.response?.status === 'number'
         ? { statusCode: properties.response.status }
         : {}),
@@ -497,6 +567,31 @@ export class GoogleAuthService {
         ? { errorCode: properties.code }
         : {}),
     };
+  }
+
+  private safeDatabaseErrorMessage(error: unknown, sensitiveValues: string[]) {
+    if (!(error instanceof Error)) {
+      return 'Unknown database error.';
+    }
+    const messages: string[] = [];
+    const seen = new Set<object>();
+    let current: unknown = error;
+    while (current instanceof Error && !seen.has(current)) {
+      seen.add(current);
+      const properties = current as Error & { code?: unknown; cause?: unknown };
+      const code = typeof properties.code === 'string'
+        ? ` (${properties.code})`
+        : '';
+      messages.push(`${current.name}${code}: ${current.message}`);
+      current = properties.cause;
+    }
+
+    let message = messages.join(' <- caused by ')
+      .replace(/\nparams:[\s\S]*/i, '\nparams: [redacted]');
+    for (const value of sensitiveValues.filter(Boolean).sort((a, b) => b.length - a.length)) {
+      message = message.replaceAll(value, '[redacted]');
+    }
+    return message.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]');
   }
 }
 

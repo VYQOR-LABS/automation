@@ -86,6 +86,7 @@ export const integrationAccounts = pgTable('integration_accounts', {
   userId: uuid('user_id').references(() => users.id),
   provider: varchar('provider', { length: 64 }).notNull(),
   providerAccountId: varchar('provider_account_id', { length: 255 }),
+  businessAccountId: varchar('business_account_id', { length: 255 }),
   accountEmail: varchar('account_email', { length: 255 }),
   authorizationScope: text('authorization_scope'),
   status: varchar('status', { length: 32 }).notNull().default('active'),
@@ -96,6 +97,9 @@ export const integrationAccounts = pgTable('integration_accounts', {
   uniqueIndex('integration_accounts_google_shared_uidx')
     .on(table.provider)
     .where(sql`${table.userId} is null and ${table.provider} = 'google' and ${table.status} = 'active'`),
+  uniqueIndex('integration_accounts_whatsapp_owner_uidx')
+    .on(table.provider)
+    .where(sql`${table.provider} = 'whatsapp' and ${table.status} = 'active'`),
 ]);
 
 export const oauthTokens = pgTable('oauth_tokens', {

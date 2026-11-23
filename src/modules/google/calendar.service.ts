@@ -132,12 +132,12 @@ export class CalendarService {
       config.features.approvalsEnabled,
       config.approvalTtlMs,
     ),
-    private readonly googleAuthService: Pick<GoogleAuthService, 'getAuthenticatedClient'> =
+    private readonly googleAuthService: Pick<GoogleAuthService, 'getAuthenticatedGoogleClient'> =
       new GoogleAuthService(),
     private readonly calendarListRequest?: CalendarListRequest,
   ) {}
 
-  async createEvent(event: calendar_v3.Schema$Event, userId?: string) {
+  async createEvent(event: calendar_v3.Schema$Event) {
     const start = event.start?.dateTime ?? event.start?.date;
     const end = event.end?.dateTime ?? event.end?.date;
     if (
@@ -154,9 +154,8 @@ export class CalendarService {
     const response = await logGoogleApiRequest({
       service: 'calendar',
       operation: 'events.insert',
-      userId,
       calendarId: 'primary',
-      request: async () => (await this.getCalendar(userId)).events.insert({
+      request: async () => (await this.getCalendar()).events.insert({
         calendarId: 'primary',
         requestBody: event,
       }),
@@ -165,13 +164,12 @@ export class CalendarService {
     return response.data;
   }
 
-  async getEvent(eventId: string, userId?: string) {
+  async getEvent(eventId: string) {
     const response = await logGoogleApiRequest({
       service: 'calendar',
       operation: 'events.get',
-      userId,
       calendarId: 'primary',
-      request: async () => (await this.getCalendar(userId)).events.get({
+      request: async () => (await this.getCalendar()).events.get({
         calendarId: 'primary',
         eventId,
       }),
@@ -201,9 +199,8 @@ export class CalendarService {
     const response = await logGoogleApiRequest({
       service: 'calendar',
       operation: 'events.patch',
-      userId,
       calendarId: 'primary',
-      request: async () => (await this.getCalendar(userId)).events.patch({
+      request: async () => (await this.getCalendar()).events.patch({
         calendarId: 'primary',
         eventId,
         requestBody: event,
@@ -226,20 +223,18 @@ export class CalendarService {
     await logGoogleApiRequest({
       service: 'calendar',
       operation: 'events.delete',
-      userId,
       calendarId: 'primary',
-      request: async () => (await this.getCalendar(userId)).events.delete({
+      request: async () => (await this.getCalendar()).events.delete({
         calendarId: 'primary',
         eventId,
       }),
     });
   }
 
-  async listUpcomingEvents(maxResults = 5, userId?: string) {
+  async listUpcomingEvents(maxResults = 5) {
     return this.listEvents(
       { period: 'upcoming' },
       maxResults,
-      userId,
       maxResults,
     );
   }
@@ -247,7 +242,6 @@ export class CalendarService {
   async listEvents(
     options: CalendarLookupOptions = {},
     maxResults = 2500,
-    userId?: string,
     maxEventCount = Number.POSITIVE_INFINITY,
   ): Promise<CalendarEventResult[]> {
     if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 2500) {
@@ -257,7 +251,7 @@ export class CalendarService {
     const { timeMin, timeMax } = getCalendarLookupTimeRange(options);
     const calendar = this.calendarListRequest
       ? undefined
-      : await this.getCalendar(userId);
+      : await this.getCalendar();
     const events: CalendarEventResult[] = [];
     let pageToken: string | undefined;
 
@@ -265,7 +259,6 @@ export class CalendarService {
       const response = await logGoogleApiRequest({
         service: 'calendar',
         operation: 'events.list',
-        userId,
         calendarId: 'primary',
         request: () => {
           const params = {
@@ -310,8 +303,8 @@ export class CalendarService {
     return events;
   }
 
-  private async getCalendar(userId?: string) {
-    const authClient = await this.googleAuthService.getAuthenticatedClient(userId);
+  private async getCalendar() {
+    const authClient = await this.googleAuthService.getAuthenticatedGoogleClient();
     return google.calendar({ version: 'v3', auth: authClient });
   }
 }

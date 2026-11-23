@@ -51,25 +51,25 @@ export class GmailService {
       config.features.approvalsEnabled,
       config.approvalTtlMs,
     ),
-    private readonly googleAuthService: Pick<GoogleAuthService, 'getAuthenticatedClient'> =
+    private readonly googleAuthService: Pick<GoogleAuthService, 'getAuthenticatedGoogleClient'> =
       new GoogleAuthService(),
     private readonly createGmailClient: GmailClientFactory = (authClient) =>
       gmail({ version: 'v1', auth: authClient }),
   ) {}
 
-  async sendMessage(input: GmailMessageInput, userId: string) {
+  async sendMessage(input: GmailMessageInput, ownerUserId: string) {
     const policy = await this.approvalService.evaluateEmailSend({
-      userId,
+      userId: ownerUserId,
       email: input,
     });
     if (!policy.approved) {
       return policy;
     }
 
-    return this.sendValidatedMessage(input, userId);
+    return this.sendValidatedMessage(input, ownerUserId);
   }
 
-  private async sendValidatedMessage(input: GmailMessageInput, userId: string) {
+  private async sendValidatedMessage(input: GmailMessageInput, ownerUserId: string) {
     if (
       /[\r\n]/.test(input.to) ||
       /[\r\n]/.test(input.cc ?? '') ||
@@ -79,7 +79,7 @@ export class GmailService {
       throw new Error('Email recipients and subject must not contain line breaks.');
     }
 
-    const authClient = await this.googleAuthService.getAuthenticatedClient(userId);
+    const authClient = await this.googleAuthService.getAuthenticatedGoogleClient();
     const gmailClient = this.createGmailClient(authClient);
     const message = [
       `To: ${input.to}`,
@@ -96,7 +96,6 @@ export class GmailService {
     const response = await logGoogleApiRequest({
       service: 'gmail',
       operation: 'users.messages.send',
-      userId,
       request: () => gmailClient.users.messages.send({
         userId: 'me',
         requestBody: {
@@ -108,13 +107,12 @@ export class GmailService {
     return response.data;
   }
 
-  async listMessages(query = 'in:inbox', maxResults = 5, userId = 'shared') {
-    const authClient = await this.googleAuthService.getAuthenticatedClient(userId);
+  async listMessages(query = 'in:inbox', maxResults = 5) {
+    const authClient = await this.googleAuthService.getAuthenticatedGoogleClient();
     const gmailClient = this.createGmailClient(authClient);
     const response = await logGoogleApiRequest({
       service: 'gmail',
       operation: 'users.messages.list',
-      userId,
       request: () => gmailClient.users.messages.list({
         userId: 'me',
         q: query,
@@ -126,13 +124,12 @@ export class GmailService {
     return response.data.messages ?? [];
   }
 
-  async getMessage(messageId: string, userId = 'shared') {
-    const authClient = await this.googleAuthService.getAuthenticatedClient(userId);
+  async getMessage(messageId: string) {
+    const authClient = await this.googleAuthService.getAuthenticatedGoogleClient();
     const gmailClient = this.createGmailClient(authClient);
     const response = await logGoogleApiRequest({
       service: 'gmail',
       operation: 'users.messages.get',
-      userId,
       request: () => gmailClient.users.messages.get({
         userId: 'me',
         id: messageId,

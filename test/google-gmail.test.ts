@@ -12,12 +12,10 @@ function createGmailService() {
     'http://localhost:3020/google/redirect',
   );
   const gmailClient = gmail({ version: 'v1', auth: authClient });
-  let authUserId = '';
   const service = new GmailService(
     new ApprovalService(true),
     {
-      async getAuthenticatedClient(userId = 'shared') {
-        authUserId = userId;
+      async getAuthenticatedGoogleClient() {
         return authClient;
       },
     },
@@ -27,12 +25,11 @@ function createGmailService() {
     authClient,
     gmailClient,
     service,
-    getAuthUserId: () => authUserId,
   };
 }
 
 test('Gmail search uses the shared authenticated client and returns actual message/thread IDs', async (t) => {
-  const { gmailClient, service, getAuthUserId } = createGmailService();
+  const { gmailClient, service } = createGmailService();
   let requestQuery: string | null | undefined;
   t.mock.method(gmailClient.users.messages, 'list', async (params) => {
     requestQuery = params.q;
@@ -47,9 +44,8 @@ test('Gmail search uses the shared authenticated client and returns actual messa
     };
   });
 
-  const messages = await service.listMessages('from:example.com subject:invoice', 10, 'app-user');
+  const messages = await service.listMessages('from:example.com subject:invoice', 10);
   assert.equal(requestQuery, 'from:example.com subject:invoice');
-  assert.equal(getAuthUserId(), 'app-user');
   assert.deepEqual(messages, [
     { id: 'message-1', threadId: 'thread-1' },
     { id: 'message-2', threadId: 'thread-2' },

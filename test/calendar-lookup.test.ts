@@ -8,9 +8,26 @@ import {
 } from '../src/modules/google/calendar.service.js';
 import type { calendar_v3 } from 'googleapis';
 import { GoogleAuthError } from '../src/modules/google/google.service.js';
+import { getGoogleRequestUrl } from '../src/modules/google/google-api-logger.js';
 import { ApprovalService } from '../src/modules/tools/approval.service.js';
 
 const fixedNow = new Date('2026-11-20T12:00:00.000Z');
+
+test('Google API request URL is extracted from upstream errors', () => {
+  assert.equal(
+    getGoogleRequestUrl({
+      response: {
+        status: 401,
+        config: { url: 'https://www.googleapis.com/calendar/v3/calendars/primary/events' },
+      },
+    }),
+    'https://www.googleapis.com/calendar/v3/calendars/primary/events',
+  );
+  assert.equal(getGoogleRequestUrl(new GoogleAuthError(
+    'GOOGLE_ACCOUNT_NOT_CONNECTED',
+    'Authorize Google first.',
+  )), undefined);
+});
 
 function createCalendarService(
   lookup: (params: calendar_v3.Params$Resource$Events$List) => Promise<{
@@ -31,7 +48,7 @@ function createCalendarService(
 ) {
   return new CalendarService(
     new ApprovalService(false),
-    { getAuthenticatedClient: async () => { throw new Error('Test request bypasses Google auth.'); } },
+    { getAuthenticatedGoogleClient: async () => { throw new Error('Test request bypasses Google auth.'); } },
     (params) => lookup(params),
   );
 }
@@ -74,7 +91,6 @@ test('Calendar lookup requests events from the selected period and paginates res
   const events = await service.listEvents(
     { period: 'today', timeZone: 'Africa/Nairobi', now: fixedNow },
     2500,
-    'user-1',
   );
 
   assert.equal(requests.length, 2);
@@ -156,16 +172,16 @@ test('Calendar periods use timezone-aware day and week boundaries', () => {
   });
 });
 
-test('Calendar lookup API is in Swagger and reports a missing shared Google connection', async () => {
+test('Calendar lookup API reports that Google OAuth must be completed', async () => {
   const app = await buildApp({
     googleAuthService: {
-      beginAuthorization: () => ({ state: 'test-state', authUrl: 'https://accounts.google.com/' }),
+      beginAuthorization: async () => ({ state: 'test-state', authUrl: 'https://accounts.google.com/' }),
       completeAuthorization: async () => ({ connected: true }),
       validateAuthorizationState: () => undefined,
-      getAuthenticatedClient: async () => {
+      getAuthenticatedGoogleClient: async () => {
         throw new GoogleAuthError(
           'GOOGLE_ACCOUNT_NOT_CONNECTED',
-          'A shared Google account has not been connected.',
+          'Authorize the Google account using GET /api/google/connect before using Calendar or Gmail.',
         );
       },
     },
@@ -184,7 +200,7 @@ test('Calendar lookup API is in Swagger and reports a missing shared Google conn
       tool: 'calendar_lookup',
       error: {
         code: 'GOOGLE_ACCOUNT_NOT_CONNECTED',
-        message: 'A shared Google account has not been connected.',
+        message: 'Authorize the Google account using GET /api/google/connect before using Calendar or Gmail.',
       },
     });
   } finally {

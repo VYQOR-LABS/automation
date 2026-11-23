@@ -25,8 +25,10 @@ export class WhatsAppGraphApiError extends Error {
 }
 
 export class WhatsAppService {
-  private readonly phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID ?? '';
+  private readonly phoneNumberId = config.whatsappPhoneNumberId;
   private readonly apiToken = process.env.WHATSAPP_API_TOKEN ?? '';
+
+  constructor(private readonly webhookSecret = config.whatsappWebhookSecret) {}
 
   private getBusinessAccountId() {
     if (!config.whatsappBusinessAccountId) {
@@ -192,12 +194,12 @@ export class WhatsAppService {
   }
 
   verifyWebhookSignature(rawBody: Buffer, signatureHeader?: string) {
-    if (!config.whatsappWebhookSecret || !signatureHeader) {
+    if (!this.webhookSecret || !signatureHeader) {
       return false;
     }
 
     const expected = `sha256=${crypto
-      .createHmac('sha256', config.whatsappWebhookSecret)
+      .createHmac('sha256', this.webhookSecret)
       .update(rawBody)
       .digest('hex')}`;
 
@@ -310,11 +312,15 @@ export class WhatsAppService {
   }
 
   private logMessageRequest(body: Record<string, unknown>) {
+    const text = typeof body.text === 'object' && body.text !== null
+      ? (body.text as { body?: unknown }).body
+      : undefined;
     logger.info(
       {
         method: 'POST',
         url: `https://graph.facebook.com/${config.whatsappApiVersion}/${this.phoneNumberId}/messages`,
-        requestBody: body,
+        messageType: body.type,
+        ...(typeof text === 'string' ? { textLength: text.length } : {}),
       },
       'WhatsApp Graph API request',
     );
@@ -358,5 +364,37 @@ export class WhatsAppService {
       timestamp: typeof message.timestamp === 'string' ? message.timestamp : null,
       metadata: value?.metadata ?? null,
     };
+  }
+
+  isConfiguredWebhookTarget(
+    payload: unknown,
+    phoneNumberId = config.whatsappPhoneNumberId,
+    businessAccountId = config.whatsappBusinessAccountId,
+  ) {
+    if (
+      !phoneNumberId ||
+      !businessAccountId ||
+      !payload ||
+      typeof payload !== 'object'
+    ) {
+      return false;
+    }
+    const entries = (payload as {
+      entry?: Array<{ id?: unknown; changes?: Array<{ value?: { metadata?: unknown } }> }>;
+    }).entry;
+    return Array.isArray(entries) &&
+      entries.length > 0 &&
+      entries.every((entry) =>
+        entry.id === businessAccountId &&
+        Array.isArray(entry.changes) &&
+        entry.changes.length > 0 &&
+        entry.changes.every((change) => {
+          const metadata = change.value?.metadata;
+          return typeof metadata === 'object' &&
+            metadata !== null &&
+            'phone_number_id' in metadata &&
+            metadata.phone_number_id === phoneNumberId;
+        }),
+      );
   }
 }

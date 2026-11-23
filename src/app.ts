@@ -5,6 +5,7 @@ import Fastify, {
 } from 'fastify';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
+import rawBody from 'fastify-raw-body';
 import { z } from 'zod';
 import { config } from './config.js';
 import { logger } from './lib/logger.js';
@@ -17,15 +18,16 @@ import {
 } from './modules/google/google.service.js';
 import { CalendarService } from './modules/google/calendar.service.js';
 import { GmailService } from './modules/google/gmail.service.js';
+import { getGoogleRequestUrl } from './modules/google/google-api-logger.js';
 import { MemoryService } from './modules/memory/memory.service.js';
 import { MessagingService } from './modules/messaging/messaging.service.js';
-import { UserService } from './modules/user/user.service.js';
 import { ApprovalService } from './modules/tools/approval.service.js';
 import { ToolRegistry } from './modules/tools/tool-registry.js';
 import {
   WhatsAppGraphApiError,
   WhatsAppService,
 } from './modules/whatsapp/whatsapp.service.js';
+import { getOrCreateWhatsAppOwnerUserId } from './modules/whatsapp/whatsapp-owner.service.js';
 
 function formatResponseBody(payload: string | Buffer | null) {
   if (payload === null) {
@@ -52,15 +54,13 @@ function googleFailure(
     : {};
   const status = properties.response?.status;
   if (error instanceof GoogleAuthError) {
-    const statusCode = error.code === 'GOOGLE_ACCOUNT_NOT_CONNECTED'
+    const statusCode = error.code === 'GOOGLE_ACCOUNT_NOT_CONNECTED' ||
+      error.code === 'GOOGLE_REFRESH_TOKEN_MISSING'
       ? 401
       : error.code === 'GOOGLE_OAUTH_STATE_INVALID'
         ? 400
-        : error.code === 'GOOGLE_ACCOUNT_ALREADY_CONNECTED'
-          ? 409
-          : error.code === 'GOOGLE_TOKEN_STORAGE_NOT_CONFIGURED' ||
-              error.code === 'GOOGLE_AUTH_NOT_CONFIGURED'
-            ? 500
+        : error.code === 'GOOGLE_AUTH_NOT_CONFIGURED'
+          ? 500
           : error.code === 'GOOGLE_MISSING_PERMISSIONS' ||
               error.code === 'GOOGLE_AUTHORIZATION_REVOKED'
             ? 403
@@ -141,11 +141,18 @@ type GoogleAuthServiceContract = Pick<
   | 'beginAuthorization'
   | 'completeAuthorization'
   | 'validateAuthorizationState'
-  | 'getAuthenticatedClient'
+  | 'getAuthenticatedGoogleClient'
 >;
 
 export async function buildApp(
-  dependencies: { googleAuthService?: GoogleAuthServiceContract } = {},
+  dependencies: {
+    googleAuthService?: GoogleAuthServiceContract;
+    whatsappPhoneNumberId?: string;
+    whatsappBusinessAccountId?: string;
+    whatsappWebhookSecret?: string;
+    whatsappVerifyToken?: string;
+    ownerUserIdResolver?: () => Promise<string>;
+  } = {},
 ) {
   const app = Fastify({
     logger: {
@@ -171,6 +178,11 @@ export async function buildApp(
     ajv: {
       customOptions: { strictSchema: false },
     },
+  });
+  await app.register(rawBody, {
+    global: false,
+    encoding: false,
+    runFirst: true,
   });
 
   app.setErrorHandler((error, request, reply) => {
@@ -243,9 +255,8 @@ export async function buildApp(
       {
         method: request.method,
         url: request.url.split('?')[0],
-        requestBody: request.body ?? null,
       },
-      'HTTP request body',
+      'HTTP request received',
     );
   });
 
@@ -261,10 +272,15 @@ export async function buildApp(
       callbackPath === '/api/google/calendar/events' ||
       callbackPath.startsWith('/api/google/gmail/') ||
       callbackPath === '/api/ai/run';
+    const containsPrivateMessagingData =
+      callbackPath === '/api/webhooks/whatsapp' ||
+      callbackPath === '/api/messages/ingest';
     const responseBody = isGoogleOAuthCallback || isGoogleOAuthStart
       ? '[redacted OAuth response]'
       : containsPrivateGoogleData
         ? '[redacted private integration response]'
+        : containsPrivateMessagingData
+          ? '[redacted private message response]'
         : typeof payload === 'string' || Buffer.isBuffer(payload)
           ? formatResponseBody(payload)
           : payload === null
@@ -299,8 +315,7 @@ export async function buildApp(
       ],
       tags: [
         { name: 'System', description: 'Service status and available modules.' },
-        { name: 'Users', description: 'Create and retrieve Vico AI user profiles.' },
-        { name: 'Messaging', description: 'Ingest and send user messages.' },
+        { name: 'Messaging', description: 'Ingest and send owner messages.' },
         {
           name: 'WhatsApp',
           description:
@@ -316,7 +331,30 @@ export async function buildApp(
     staticCSP: true,
   });
 
-  const userService = new UserService();
+  const whatsappPhoneNumberId =
+    dependencies.whatsappPhoneNumberId ?? config.whatsappPhoneNumberId;
+  const whatsappBusinessAccountId =
+    dependencies.whatsappBusinessAccountId ?? config.whatsappBusinessAccountId;
+  const whatsappWebhookSecret =
+    dependencies.whatsappWebhookSecret ?? config.whatsappWebhookSecret;
+  const whatsappVerifyToken =
+    dependencies.whatsappVerifyToken ?? config.whatsappVerifyToken;
+  const resolveOwnerUserId = dependencies.ownerUserIdResolver ?? (() =>
+    getOrCreateWhatsAppOwnerUserId(whatsappPhoneNumberId, whatsappBusinessAccountId));
+  let ownerUserIdPromise: Promise<string> | undefined;
+  const requireAppOwnerUserId = async () => {
+    if (!whatsappPhoneNumberId || !whatsappBusinessAccountId) {
+      throw Object.assign(
+        new Error('WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_BUSINESS_ACCOUNT_ID must be configured.'),
+        { code: 'WHATSAPP_OWNER_NOT_CONFIGURED', statusCode: 503 },
+      );
+    }
+    ownerUserIdPromise ??= resolveOwnerUserId().catch((error: unknown) => {
+      ownerUserIdPromise = undefined;
+      throw error;
+    });
+    return ownerUserIdPromise;
+  };
   const memoryService = new MemoryService();
   const aiProvider = createAiProvider();
   const approvalService = new ApprovalService(
@@ -326,7 +364,7 @@ export async function buildApp(
   const googleAuthService = dependencies.googleAuthService ?? new GoogleAuthService();
   const calendarService = new CalendarService(approvalService, googleAuthService);
   const gmailService = new GmailService(approvalService, googleAuthService);
-  const whatsappService = new WhatsAppService();
+  const whatsappService = new WhatsAppService(whatsappWebhookSecret);
   const toolRegistry = new ToolRegistry();
   toolRegistry.register({
     name: 'memory_search',
@@ -352,11 +390,7 @@ export async function buildApp(
             ? 'today'
             : 'upcoming';
       try {
-        const events = await calendarService.listEvents(
-          { period },
-          2500,
-          typeof input.userId === 'string' ? input.userId : undefined,
-        );
+        const events = await calendarService.listEvents({ period });
         return {
           success: true,
           tool: 'calendar_lookup',
@@ -376,7 +410,6 @@ export async function buildApp(
         const messages = await gmailService.listMessages(
           typeof input.message === 'string' ? input.message : 'in:inbox',
           5,
-          typeof input.userId === 'string' ? input.userId : 'shared',
         );
         return {
           success: true,
@@ -490,13 +523,12 @@ export async function buildApp(
               modules: {
                 type: 'array',
                 items: { type: 'string' },
-                example: ['user', 'messaging', 'whatsapp', 'memory', 'ai'],
+                example: ['messaging', 'whatsapp', 'memory', 'ai'],
               },
             },
             required: ['modules'],
             example: {
               modules: [
-                'user',
                 'messaging',
                 'whatsapp',
                 'memory',
@@ -513,7 +545,6 @@ export async function buildApp(
     },
     async () => ({
       modules: [
-        'user',
         'messaging',
         'whatsapp',
         'memory',
@@ -526,117 +557,7 @@ export async function buildApp(
     }),
   );
 
-  api.get(
-    '/api/users/:userId',
-    {
-      schema: {
-        tags: ['Users'],
-        summary: 'Get a user profile',
-        description: 'Retrieves the Vico AI profile associated with the supplied user ID.',
-        params: {
-          type: 'object',
-          properties: {
-            userId: { type: 'string', description: 'Unique ID of the user.', example: 'usr_123' },
-          },
-          required: ['userId'],
-        },
-        response: {
-          200: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', example: 'usr_123' },
-              status: { type: 'string', example: 'active' },
-              profile: {
-                type: 'object',
-                properties: { fullName: { type: 'string', example: 'Vico User' } },
-                required: ['fullName'],
-              },
-            },
-            required: ['id', 'status', 'profile'],
-            example: {
-              id: 'usr_123',
-              status: 'active',
-              profile: { fullName: 'Vico User' },
-            },
-          },
-        },
-      },
-    },
-    async (request) => {
-      const { userId } = request.params as { userId: string };
-      return userService.getUser(userId);
-    },
-  );
-
-  const createUserSchema = z.object({
-    whatsappPhone: z.string().optional(),
-    email: z.string().email().optional(),
-    fullName: z.string().optional(),
-    displayName: z.string().optional(),
-  });
-
-  api.post(
-    '/api/users',
-    {
-      schema: {
-        tags: ['Users'],
-        summary: 'Create a user profile',
-        description:
-          'Creates a Vico AI user profile. All profile fields are optional; omitted values are returned as null.',
-        body: {
-          type: 'object',
-          properties: {
-            whatsappPhone: {
-              type: 'string',
-              description: 'User phone number used for WhatsApp messaging.',
-              example: '+15551234567',
-            },
-            email: { type: 'string', format: 'email', description: 'User email address.', example: 'alex@example.com' },
-            fullName: { type: 'string', description: 'User full name.', example: 'Alex Morgan' },
-            displayName: { type: 'string', description: 'Name to use when addressing the user.', example: 'Alex' },
-          },
-          example: {
-            whatsappPhone: '+15551234567',
-            email: 'alex@example.com',
-            fullName: 'Alex Morgan',
-            displayName: 'Alex',
-          },
-        },
-        response: {
-          400: validationErrorResponse,
-          200: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: 'Generated unique user ID.', example: 'usr_123' },
-              whatsappPhone: { type: ['string', 'null'], example: '+15551234567' },
-              email: { type: ['string', 'null'], example: 'alex@example.com' },
-              fullName: { type: ['string', 'null'], example: 'Alex Morgan' },
-              displayName: { type: ['string', 'null'], example: 'Alex' },
-              status: { type: 'string', example: 'active' },
-              createdAt: { type: 'string', format: 'date-time' },
-            },
-            required: ['id', 'whatsappPhone', 'email', 'fullName', 'displayName', 'status', 'createdAt'],
-            example: {
-              id: 'usr_123',
-              whatsappPhone: '+15551234567',
-              email: 'alex@example.com',
-              fullName: 'Alex Morgan',
-              displayName: 'Alex',
-              status: 'active',
-              createdAt: '2026-11-14T12:00:00.000Z',
-            },
-          },
-        },
-      },
-    },
-    async (request) => {
-      const data = createUserSchema.parse(request.body);
-      return userService.createUser(data);
-    },
-  );
-
   const ingestMessageSchema = z.object({
-    userId: z.string().min(1),
     phone: z.string().min(1),
     content: z.string().min(1),
   });
@@ -644,43 +565,55 @@ export async function buildApp(
   api.post(
     '/api/messages/ingest',
     {
+      config: { rawBody: true },
       schema: {
         tags: ['Messaging'],
         summary: 'Ingest an incoming message',
         description:
-          'Accepts an incoming message and queues it for processing. The response includes generated message and conversation IDs.',
+          'Accepts a message from any sender only when the request has a valid server HMAC signature.',
         body: {
           type: 'object',
           properties: {
-            userId: { type: 'string', minLength: 1, description: 'ID of the user who sent the message.', example: 'usr_123' },
             phone: { type: 'string', minLength: 1, description: 'Sender phone number.', example: '+15551234567' },
             content: { type: 'string', minLength: 1, description: 'Text content of the message.', example: 'What is on my calendar today?' },
           },
-          required: ['userId', 'phone', 'content'],
+          required: ['phone', 'content'],
           example: {
-            userId: 'usr_123',
             phone: '+15551234567',
             content: 'What is on my calendar today?',
           },
         },
         response: {
           400: validationErrorResponse,
+          401: {
+            type: 'object',
+            properties: { error: { type: 'string', example: 'invalid_webhook_signature' } },
+            required: ['error'],
+          },
+          403: {
+            type: 'object',
+            properties: { error: { type: 'string', example: 'unauthorized_sender' } },
+            required: ['error'],
+          },
+          503: {
+            type: 'object',
+            properties: { error: { type: 'string', example: 'whatsapp_owner_not_configured' } },
+            required: ['error'],
+          },
           200: {
             type: 'object',
             properties: {
               messageId: { type: 'string', example: 'msg_456' },
               conversationId: { type: 'string', example: 'conv_789' },
-              userId: { type: 'string', example: 'usr_123' },
               phone: { type: 'string', example: '+15551234567' },
               content: { type: 'string', example: 'What is on my calendar today?' },
               status: { type: 'string', example: 'queued' },
               createdAt: { type: 'string', format: 'date-time' },
             },
-            required: ['messageId', 'conversationId', 'userId', 'phone', 'content', 'status', 'createdAt'],
+            required: ['messageId', 'conversationId', 'phone', 'content', 'status', 'createdAt'],
             example: {
               messageId: 'msg_456',
               conversationId: 'conv_789',
-              userId: 'usr_123',
               phone: '+15551234567',
               content: 'What is on my calendar today?',
               status: 'queued',
@@ -690,9 +623,22 @@ export async function buildApp(
         },
       },
     },
-    async (request) => {
+    async (request, reply) => {
       const data = ingestMessageSchema.parse(request.body);
-      logger.info({ data }, 'Ingesting WhatsApp message');
+      const rawBody = request.rawBody;
+      const signature = request.headers['x-hub-signature-256'];
+      if (
+        !whatsappWebhookSecret ||
+        typeof signature !== 'string' ||
+        !rawBody ||
+        !whatsappService.verifyWebhookSignature(
+          Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody),
+          signature,
+        )
+      ) {
+        return reply.code(401).send({ error: 'invalid_webhook_signature' });
+      }
+      logger.info({ contentLength: data.content.length }, 'Ingesting signed WhatsApp message');
       return messagingService.ingestMessage(data);
     },
   );
@@ -1504,20 +1450,55 @@ export async function buildApp(
     },
   );
 
-  api.post(
+  api.get(
     '/api/webhooks/whatsapp',
     {
       schema: {
         tags: ['WhatsApp'],
+        summary: 'Verify the WhatsApp webhook endpoint',
+        querystring: {
+          type: 'object',
+          properties: {
+            'hub.mode': { type: 'string' },
+            'hub.verify_token': { type: 'string' },
+            'hub.challenge': { type: 'string' },
+          },
+          required: ['hub.mode', 'hub.verify_token', 'hub.challenge'],
+        },
+        response: {
+          200: { type: 'string', description: 'Meta webhook challenge.' },
+          403: { type: 'string', description: 'Webhook verification failed.' },
+        },
+      },
+    },
+    async (request, reply) => {
+      const query = request.query as Record<string, string>;
+      if (
+        query['hub.mode'] !== 'subscribe' ||
+        !whatsappVerifyToken ||
+        query['hub.verify_token'] !== whatsappVerifyToken
+      ) {
+        return reply.code(403).send('Webhook verification failed.');
+      }
+      return reply.type('text/plain').send(query['hub.challenge']);
+    },
+  );
+
+  api.post(
+    '/api/webhooks/whatsapp',
+    {
+      config: { rawBody: true },
+      schema: {
+        tags: ['WhatsApp'],
         summary: 'Receive a WhatsApp webhook',
         description:
-          'Accepts a WhatsApp Cloud API webhook payload and extracts the first incoming message when present. When webhook signature validation is configured, an invalid signature is rejected.',
+          'Validates the Meta signature and configured receiving WhatsApp business account. Any sender may message the configured business number.',
         headers: {
           type: 'object',
           properties: {
             'x-hub-signature-256': {
               type: 'string',
-              description: 'Optional WhatsApp HMAC-SHA256 signature header.',
+              description: 'Required WhatsApp HMAC-SHA256 signature header.',
               example: 'sha256=abcdef123456',
             },
           },
@@ -1581,39 +1562,69 @@ export async function buildApp(
           },
           401: {
             type: 'object',
-            description: 'The supplied WhatsApp signature is invalid.',
+            description: 'The WhatsApp signature is missing or invalid.',
             properties: { error: { type: 'string', example: 'invalid_webhook_signature' } },
             required: ['error'],
             example: { error: 'invalid_webhook_signature' },
+          },
+          403: {
+            type: 'object',
+            description: 'The webhook event targets a different WhatsApp account.',
+            additionalProperties: true,
+          },
+          503: {
+            type: 'object',
+            description: 'WhatsApp webhook or account-ID configuration is missing.',
+            additionalProperties: true,
           },
         },
       },
     },
     async (request, reply) => {
-    const payload = request.body as any;
-    const signature = request.headers['x-hub-signature-256'] as string | undefined;
-
-    if (config.whatsappWebhookSecret && signature) {
-      const rawBody = Buffer.from(JSON.stringify(payload));
-      const valid = whatsappService.verifyWebhookSignature(rawBody, signature);
-      if (!valid) {
-        logger.warn('Invalid WhatsApp webhook signature');
-        reply.code(401);
-        return { error: 'invalid_webhook_signature' };
+      if (!whatsappWebhookSecret) {
+        return reply.code(503).send({ error: 'whatsapp_webhook_secret_not_configured' });
       }
-    }
+      const signature = request.headers['x-hub-signature-256'];
+      const rawBody = request.rawBody;
+      if (
+        typeof signature !== 'string' ||
+        !rawBody ||
+        !whatsappService.verifyWebhookSignature(
+          Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody),
+          signature,
+        )
+      ) {
+        logger.warn('Invalid WhatsApp webhook signature');
+        return reply.code(401).send({ error: 'invalid_webhook_signature' });
+      }
 
-    const incoming = whatsappService.parseIncomingMessage(payload);
-    if (!incoming) {
-      return { status: 'no_message_payload' };
-    }
+      const payload = request.body;
+      if (!whatsappPhoneNumberId || !whatsappBusinessAccountId) {
+        return reply.code(503).send({ error: 'whatsapp_account_ids_not_configured' });
+      }
+      if (!whatsappService.isConfiguredWebhookTarget(
+        payload,
+        whatsappPhoneNumberId,
+        whatsappBusinessAccountId,
+      )) {
+        logger.warn('Rejected WhatsApp webhook for a different business account');
+        return reply.code(403).send({ error: 'whatsapp_target_mismatch' });
+      }
+      const incoming = whatsappService.parseIncomingMessage(payload);
+      if (!incoming) {
+        return { status: 'no_message_payload' };
+      }
 
-    logger.info({ incoming }, 'WhatsApp webhook received');
-    return {
-      status: 'received',
-      incoming,
-    };
-    },
+      logger.info(
+        {
+          messageId: incoming.id,
+          messageType: incoming.type,
+          contentLength: incoming.text.length,
+        },
+        'Signed WhatsApp webhook message received',
+      );
+      return { status: 'received', incoming };
+    }
   );
 
   api.get(
@@ -1623,7 +1634,7 @@ export async function buildApp(
         tags: ['Google'],
         summary: 'List events from the primary Google Calendar',
         description:
-          'Reads Calendar events using the connected shared Google account. Defaults to upcoming events and Africa/Nairobi timezone.',
+          'Reads Calendar events using Vico AI’s connected Google account. Defaults to upcoming events and Africa/Nairobi timezone.',
         querystring: {
           type: 'object',
           properties: {
@@ -1735,13 +1746,30 @@ export async function buildApp(
         };
       } catch (error) {
         const failure = googleFailure(error, 'calendar_lookup');
+        const requestUrl = getGoogleRequestUrl(error);
+        logger.error(
+          {
+            operation: 'calendar.events.list',
+            failureCode: failure.result.error.code,
+            statusCode: failure.statusCode,
+            failureSource: error instanceof GoogleAuthError
+              ? 'local_auth'
+              : requestUrl
+                ? 'google_api'
+                : 'unknown',
+            failureMessage: error instanceof Error ? error.message : String(error),
+            googleRequestSent: requestUrl !== undefined,
+            requestUrl: requestUrl ?? null,
+          },
+          'Google Calendar lookup failed',
+        );
         return reply.code(failure.statusCode).send(failure.result);
       }
     },
   );
 
   const googleConnectHandler = async (_request: FastifyRequest, reply: FastifyReply) => {
-    const { state, authUrl } = googleAuthService.beginAuthorization();
+    const { state, authUrl } = await googleAuthService.beginAuthorization();
     reply.header(
       'set-cookie',
       buildOAuthStateCookie(state, config.nodeEnv === 'production'),
@@ -1759,9 +1787,9 @@ export async function buildApp(
 
   const connectRouteSchema = {
     tags: ['Google'],
-    summary: 'Connect the shared Google account',
+    summary: 'Connect Vico AI’s Google account',
     description:
-      'Starts offline Google OAuth authorization. A short-lived HttpOnly state cookie binds the callback to this browser. The shared Google connection cannot be replaced through a second callback.',
+      'Starts offline Google OAuth authorization. Complete the Google consent flow in the same browser so its short-lived HttpOnly state cookie is sent to the callback. An existing Google connection cannot be silently replaced.',
     response: {
       200: {
         type: 'object',
@@ -1769,7 +1797,7 @@ export async function buildApp(
           authUrl: {
             type: 'string',
             format: 'uri',
-            description: 'Open this URL to authorize the shared Google account.',
+            description: 'Open this URL to authorize Vico AI’s single Google account.',
           },
         },
         required: ['authUrl'],
@@ -1794,6 +1822,11 @@ export async function buildApp(
       'set-cookie',
       buildOAuthStateCookie('', config.nodeEnv === 'production', true),
     );
+    reply
+      .header('cache-control', 'no-store, no-cache, must-revalidate, private')
+      .header('pragma', 'no-cache')
+      .header('referrer-policy', 'no-referrer')
+      .header('x-content-type-options', 'nosniff');
 
     try {
       googleAuthService.validateAuthorizationState(query.state, cookieState);
@@ -1811,7 +1844,7 @@ export async function buildApp(
         });
       }
 
-      const result = await googleAuthService.completeAuthorization({
+      await googleAuthService.completeAuthorization({
         code: query.code,
         state: query.state!,
         cookieState,
@@ -1819,12 +1852,11 @@ export async function buildApp(
       logger.info(
         {
           operation: 'oauth.callback',
-          connected: result.connected,
           scopeCount: GOOGLE_SCOPES.length,
         },
         'Google OAuth connection completed',
       );
-      return result;
+      return { success: true, message: 'Google account connected.' };
     } catch (error) {
       const failure = googleFailure(error, 'calendar_lookup');
       logger.warn(
@@ -1847,7 +1879,7 @@ export async function buildApp(
       tags: ['Google'],
       summary: 'Complete Google OAuth authorization',
       description:
-        'Validates the one-time browser state, exchanges the authorization code, and stores encrypted shared-account credentials. Tokens are never returned.',
+        'Validates OAuth state, exchanges the code, and persists encrypted credentials before confirming connection. Tokens are never returned.',
       querystring: {
         type: 'object',
         properties: {
@@ -1860,9 +1892,10 @@ export async function buildApp(
         200: {
           type: 'object',
           properties: {
-            connected: { type: 'boolean', example: true },
+            success: { type: 'boolean' },
+            message: { type: 'string' },
           },
-          required: ['connected'],
+          required: ['success', 'message'],
         },
         400: { type: 'object', additionalProperties: true },
         403: { type: 'object', additionalProperties: true },
@@ -1881,7 +1914,7 @@ export async function buildApp(
         tags: ['AI'],
         summary: 'Approve or reject a pending action',
         description:
-          'Resolves an approval owned by the supplied user ID. The caller must be authenticated upstream and provide that authenticated user ID; this endpoint does not establish identity itself.',
+          'Resolves an approval for the configured application owner. Keep this endpoint on a trusted private network because this service does not provide HTTP authentication.',
         params: {
           type: 'object',
           properties: {
@@ -1892,10 +1925,9 @@ export async function buildApp(
         body: {
           type: 'object',
           properties: {
-            userId: { type: 'string', format: 'uuid' },
             decision: { type: 'string', enum: ['approve', 'reject'] },
           },
-          required: ['userId', 'decision'],
+          required: ['decision'],
         },
       },
     },
@@ -1903,10 +1935,10 @@ export async function buildApp(
       const { approvalId } = z.object({
         approvalId: z.string().uuid(),
       }).parse(request.params);
-      const { userId, decision } = z.object({
-        userId: z.string().uuid(),
+      const { decision } = z.object({
         decision: z.enum(['approve', 'reject']),
       }).parse(request.body);
+      const userId = await requireAppOwnerUserId();
 
       const result = await approvalService.decide({
         approvalId,
@@ -1974,7 +2006,6 @@ export async function buildApp(
   );
 
   const aiRunSchema = z.object({
-    userId: z.string().min(1),
     message: z.string().min(1),
   });
 
@@ -1985,22 +2016,21 @@ export async function buildApp(
         tags: ['AI'],
         summary: 'Process a message with Vico AI',
         description:
-          'Runs a user message through the AI orchestrator. It searches enabled user memory, evaluates relevant tools and approvals, and returns the generated response with execution context. Google credentials are loaded from the shared OAuth connection.',
+          'Runs a message through Vico AI using the configured application owner context. Google credentials come from environment configuration or the active OAuth exchange.',
         body: {
           type: 'object',
           properties: {
-            userId: { type: 'string', minLength: 1, description: 'ID of the user making the request.', example: 'usr_123' },
             message: { type: 'string', minLength: 1, description: 'User message or question for Vico AI.', example: 'What is on my calendar today?' },
           },
-          required: ['userId', 'message'],
-          example: { userId: 'usr_123', message: 'What is on my calendar today?' },
+          required: ['message'],
+          example: { message: 'What is on my calendar today?' },
         },
         response: {
           400: validationErrorResponse,
           200: {
             type: 'object',
             properties: {
-              userId: { type: 'string', example: 'usr_123' },
+              userId: { type: 'string', format: 'uuid', description: 'Configured application owner record ID.' },
               intent: { type: 'string', description: 'Detected tool intent, or general-response.', example: 'calendar_lookup' },
               memoryMatches: {
                 type: 'array',
@@ -2035,7 +2065,7 @@ export async function buildApp(
             },
             required: ['userId', 'intent', 'memoryMatches', 'toolResult', 'availableTools', 'response', 'provider', 'model', 'generatedAt'],
             example: {
-              userId: 'usr_123',
+              userId: '00000000-0000-4000-8000-000000000001',
               intent: 'calendar_lookup',
               memoryMatches: [],
               toolResult: { events: [{ summary: 'Project sync' }] },
@@ -2064,7 +2094,10 @@ export async function buildApp(
     },
     async (request) => {
       const data = aiRunSchema.parse(request.body);
-      return aiOrchestrator.process(data);
+      return aiOrchestrator.process({
+        ...data,
+        userId: await requireAppOwnerUserId(),
+      });
     },
   );
   };
