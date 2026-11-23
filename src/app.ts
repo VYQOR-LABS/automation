@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -268,6 +270,9 @@ export async function buildApp(
     const isGoogleOAuthStart =
       callbackPath === '/api/google/connect' ||
       callbackPath === '/api/google/auth-url';
+    const isLegalPage =
+      callbackPath === '/privacy-policy' ||
+      callbackPath === '/terms-of-service';
     const containsPrivateGoogleData =
       callbackPath === '/api/google/calendar/events' ||
       callbackPath.startsWith('/api/google/gmail/') ||
@@ -277,6 +282,8 @@ export async function buildApp(
       callbackPath === '/api/messages/ingest';
     const responseBody = isGoogleOAuthCallback || isGoogleOAuthStart
       ? '[redacted OAuth response]'
+      : isLegalPage
+        ? '[public legal page]'
       : containsPrivateGoogleData
         ? '[redacted private integration response]'
         : containsPrivateMessagingData
@@ -2101,6 +2108,21 @@ export async function buildApp(
     },
   );
   };
+  app.get('/privacy-policy', async (_request, reply) => {
+    const html = await readFile(
+      resolve(process.cwd(), 'public', 'privacy-policy.html'),
+      'utf8',
+    );
+    return reply.type('text/html; charset=utf-8').send(html);
+  });
+  app.get('/terms-of-service', async (_request, reply) => {
+    const html = await readFile(
+      resolve(process.cwd(), 'public', 'terms-of-service.html'),
+      'utf8',
+    );
+    return reply.type('text/html; charset=utf-8').send(html);
+  });
+
   app.register(registerApiRoutes);
 
   return app;
