@@ -45,11 +45,15 @@
     .toc h2 { margin: 0 0 .5rem; padding: 0; border: 0; font-size: 1.2rem; }
     .toc ol { columns: 2; column-gap: 2rem; padding-left: 1.3rem; }
     .toc li { break-inside: avoid; }
+    .data-summary { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .95rem; }
+    .data-summary th, .data-summary td { text-align: left; vertical-align: top; border: 1px solid #dce4ed; padding: .75rem; }
+    .data-summary th { background: #f5f8fc; color: #17283b; }
     .site-nav { display: flex; flex-wrap: wrap; gap: .75rem 1.4rem; padding-bottom: 1.2rem; border-bottom: 1px solid #e1e7ee; }
     .site-nav a { font-weight: 650; }
     @media (max-width: 600px) {
       .page { width: min(100% - 1rem, 920px); margin: .5rem auto; }
       .toc ol { columns: 1; }
+      .data-summary { display: block; overflow-x: auto; }
     }
     @media print {
       :root { background: #fff; }
@@ -69,7 +73,7 @@
       </nav>
       <p class="eyebrow">Vico AI</p>
       <h1>Privacy Policy</h1>
-      <p class="muted">Effective date: November 23, 2026 · Last updated: November 23, 2026</p>
+      <p class="muted">Effective date: November 24, 2026 · Last updated: November 24, 2026</p>
       <div class="notice" role="note">
         <strong>Service limitation:</strong> Vico AI currently uses one shared
         application-owner context and does not provide built-in authentication for
@@ -155,6 +159,34 @@
           Google data is accessed only after the account owner completes OAuth
           consent, and is used to carry out the requested Calendar or Gmail feature
           and, where requested, to generate an answer from the retrieved information.</p>
+        <table class="data-summary">
+          <caption><strong>Summary of Google data handling</strong></caption>
+          <thead>
+            <tr><th scope="col">Google data</th><th scope="col">Access and purpose</th><th scope="col">Storage and sharing</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Calendar event identifiers, titles, descriptions, start and end times, locations, and status</td>
+              <td>Read from the connected account's primary calendar to answer event lookup requests. Event creation, retrieval, update, and deletion functions are available in the service layer and may be used to carry out an authorized action.</td>
+              <td>Used in the active request and returned or passed to the configured AI provider when needed for the response. Not stored by the Google token store. OAuth credentials are stored encrypted in PostgreSQL.</td>
+            </tr>
+            <tr>
+              <td>Gmail message IDs, thread IDs, snippets, dates, sender and recipient headers, subject headers, and available body text</td>
+              <td>Search terms and requested Gmail operations are sent to Gmail; read results are used to answer Gmail requests.</td>
+              <td>Used in the active request and may be passed to the configured AI provider. Message content is not stored by the Google token store. Search terms are not included in sanitized Google API failure logs.</td>
+            </tr>
+            <tr>
+              <td>Gmail recipient addresses, subject, and body for send actions</td>
+              <td>Used only to perform an email action requested by the account owner or an authorized workflow, subject to configured approval controls.</td>
+              <td>Transferred to Gmail to send the email. The application may record approval or audit metadata, but it does not store sent message bodies in the Google token store.</td>
+            </tr>
+            <tr>
+              <td>OAuth authorization code, access token, refresh token, expiry, token type, scopes, and integration status</td>
+              <td>Used to authorize Google API requests and refresh access after the account owner completes OAuth consent.</td>
+              <td>Access and refresh tokens are encrypted with AES-256-GCM and stored in the operator-configured PostgreSQL database. Kept until replaced or removed by the operator.</td>
+            </tr>
+          </tbody>
+        </table>
         <h3>Data accessed and why</h3>
         <p>The OAuth consent request contains these scopes. The scope authorizes
           access; whether a particular operation is available also depends on the
@@ -282,7 +314,10 @@
           agreement, when necessary for security purposes, to comply with applicable
           law, or for internal operations permitted by the policy using aggregated
           and anonymized data; and will not use or transfer the data to create,
-          train, or improve a generalized AI or machine-learning model. Any transfer
+          train, or improve a generalized AI or machine-learning model.
+          Vico AI does not use Google Workspace APIs or the Google user data obtained
+          through them to develop, improve, or train any non-personalized AI or
+          machine-learning model. Any transfer
           to an AI provider described above is limited to generating the response
           requested by the user and must comply with the policy's Limited Use
           restrictions.</p>
