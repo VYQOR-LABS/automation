@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Vico AI is an operator-managed AI assistant that connects messaging workflows with authorized Google services such as Gmail and Google Calendar.">
+  <meta name="theme-color" content="#071b16">
+  <link rel="canonical" href="__CANONICAL_URL__">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <title>Vico AI | Intelligence for connected workflows</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.65;
+      color: #e7f3ed;
+      background: #071b16;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+      --bg: #071b16;
+      --bg-soft: #0b241c;
+      --panel: rgba(14, 42, 31, .82);
+      --panel-strong: #102e22;
+      --line: rgba(148, 190, 164, .18);
+      --text: #e7f3ed;
+      --muted: #a8beb0;
+      --green: #55e6a5;
+      --green-strong: #20c77a;
+      --mint: #b8f7d7;
+      --amber: #f5c56c;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .25);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(ellipse at 78% 3%, rgba(32, 199, 122, .16), transparent 34rem),
+        radial-gradient(ellipse at 0% 35%, rgba(27, 111, 76, .14), transparent 34rem),
+        var(--bg);
+    }
+    a { color: var(--mint); text-underline-offset: .2em; }
+    a:hover { color: #fff; }
+    a:focus-visible, button:focus-visible { outline: 3px solid var(--amber); outline-offset: 4px; }
+    .wrap { width: min(1160px, calc(100% - 2.5rem)); margin-inline: auto; }
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(7, 27, 22, .82);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(18px);
+    }
+    .nav {
+      min-height: 76px; display: flex; align-items: center; justify-content: space-between;
+      gap: 1.25rem;
+    }
+    .brand { display: inline-flex; align-items: center; gap: .75rem; text-decoration: none; color: var(--text); }
+    .brand img { width: 39px; height: 39px; }
+    .brand-name { font-weight: 800; letter-spacing: -.035em; font-size: 1.12rem; }
+    .brand-name span { color: var(--green); }
+    .nav-links { display: flex; align-items: center; flex-wrap: wrap; gap: 1.4rem; }
+    .nav-links a { color: var(--muted); text-decoration: none; font-size: .92rem; font-weight: 650; }
+    .nav-links a:hover, .nav-links a[aria-current="page"] { color: var(--mint); }
+    .nav-cta, .button {
+      display: inline-flex; align-items: center; justify-content: center; gap: .55rem;
+      padding: .72rem 1.05rem; border-radius: 999px; text-decoration: none;
+      color: #052116; background: var(--green); border: 1px solid var(--green);
+      font-weight: 800; font-size: .9rem; transition: transform .18s ease, background .18s ease;
+    }
+    .nav-cta:hover, .button:hover { color: #052116; background: #8af2bf; transform: translateY(-2px); }
+    .button.secondary { color: var(--mint); background: transparent; border-color: var(--line); }
+    .button.secondary:hover { color: #fff; background: rgba(85, 230, 165, .08); }
+    .hero { padding: clamp(4.5rem, 9vw, 7.5rem) 0 5rem; }
+    .hero-grid { display: grid; grid-template-columns: minmax(0, 1.06fr) minmax(320px, .94fr); gap: 3.5rem; align-items: center; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: .55rem;
+      color: var(--mint); border: 1px solid rgba(85, 230, 165, .25);
+      background: rgba(85, 230, 165, .07); border-radius: 999px;
+      padding: .38rem .78rem; font-size: .78rem; font-weight: 800;
+      letter-spacing: .11em; text-transform: uppercase;
+    }
+    .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 5px rgba(85, 230, 165, .12); }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 12ch; margin: 1.2rem 0 1.2rem; font-size: clamp(3rem, 6.5vw, 5.6rem); line-height: .99; letter-spacing: -.065em; }
+    h1 .accent { color: var(--green); }
+    .hero-copy { max-width: 61ch; color: var(--muted); font-size: clamp(1.05rem, 1.7vw, 1.2rem); }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: .8rem; margin-top: 1.8rem; }
+    .micro-note { margin-top: 1.2rem; color: #819b8b; font-size: .84rem; }
+    .hero-visual {
+      position: relative; min-height: 430px; display: grid; place-items: center;
+      border: 1px solid var(--line); border-radius: 30px; overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 44%, rgba(54, 208, 133, .16), transparent 13rem),
+        linear-gradient(145deg, rgba(20, 61, 43, .85), rgba(7, 25, 20, .95));
+      box-shadow: var(--shadow);
+    }
+    .hero-visual::before, .hero-visual::after {
+      content: ""; position: absolute; border: 1px solid rgba(120, 224, 170, .13); border-radius: 50%;
+      width: 300px; height: 300px;
+    }
+    .hero-visual::after { width: 410px; height: 410px; }
+    .orbit { position: absolute; inset: 0; display: grid; place-items: center; }
+    .orbit svg { width: 100%; height: 100%; position: absolute; }
+    .core {
+      position: relative; z-index: 2; width: 148px; height: 148px; border-radius: 38px;
+      display: grid; place-items: center; text-align: center;
+      background: linear-gradient(145deg, #63efad, #1c9e65);
+      color: #062216; box-shadow: 0 0 70px rgba(85, 230, 165, .28);
+      transform: rotate(-7deg);
+    }
+    .core-inner { transform: rotate(7deg); }
+    .core strong { display: block; font-size: 1.2rem; letter-spacing: -.04em; }
+    .core small { font-size: .7rem; font-weight: 750; opacity: .78; }
+    .orbit-node {
+      position: absolute; z-index: 3; min-width: 116px; padding: .72rem .85rem;
+      display: flex; align-items: center; gap: .6rem;
+      border: 1px solid rgba(166, 218, 185, .22); border-radius: 14px;
+      background: rgba(8, 31, 23, .93); box-shadow: 0 12px 35px rgba(0,0,0,.2);
+      color: var(--text); font-size: .83rem; font-weight: 750;
+    }
+    .node-icon {
+      width: 30px; height: 30px; display: grid; place-items: center; flex: 0 0 auto;
+      border-radius: 9px; background: rgba(85, 230, 165, .12); color: var(--green);
+    }
+    .node-whatsapp { top: 17%; left: 8%; }
+    .node-gmail { top: 17%; right: 8%; }
+    .node-calendar { bottom: 17%; left: 8%; }
+    .node-tools { bottom: 17%; right: 8%; }
+    .section { padding: 5.5rem 0; border-top: 1px solid var(--line); }
+    .section-head { max-width: 740px; margin-bottom: 2.3rem; }
+    .section-kicker { color: var(--green); font-size: .78rem; font-weight: 850; letter-spacing: .13em; text-transform: uppercase; }
+    h2 { margin: .55rem 0 .9rem; font-size: clamp(2rem, 4vw, 3.2rem); line-height: 1.08; letter-spacing: -.05em; }
+    h3 { margin-bottom: .5rem; font-size: 1.12rem; letter-spacing: -.02em; }
+    .section-intro { color: var(--muted); max-width: 72ch; }
+    .feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+    .feature {
+      padding: 1.45rem; border-radius: 20px; border: 1px solid var(--line);
+      background: linear-gradient(155deg, rgba(18, 53, 37, .88), rgba(10, 32, 24, .88));
+    }
+    .feature-top { display: flex; align-items: center; justify-content: space-between; gap: .8rem; margin-bottom: 1.15rem; }
+    .feature-icon {
+      width: 43px; height: 43px; border-radius: 13px; display: grid; place-items: center;
+      color: var(--green); background: rgba(85, 230, 165, .1); border: 1px solid rgba(85, 230, 165, .15);
+    }
+    .feature-icon svg { width: 22px; height: 22px; }
+    .tag { display: inline-flex; align-items: center; border-radius: 999px; padding: .2rem .58rem; font-size: .7rem; font-weight: 850; letter-spacing: .03em; }
+    .tag.live { color: #a8f5ca; background: rgba(42, 184, 111, .14); border: 1px solid rgba(85, 230, 165, .18); }
+    .tag.limited { color: #ffdfa1; background: rgba(245, 197, 108, .1); border: 1px solid rgba(245, 197, 108, .2); }
+    .feature p { margin-bottom: 0; color: var(--muted); font-size: .94rem; }
+    .diagram-shell {
+      padding: clamp(1rem, 3vw, 2rem); border-radius: 24px; border: 1px solid var(--line);
+      background: linear-gradient(145deg, rgba(14, 43, 31, .95), rgba(8, 28, 21, .95));
+      box-shadow: var(--shadow);
+    }
+    .diagram-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
+    .diagram-title p { color: var(--muted); margin-bottom: 0; font-size: .9rem; }
+    .flow {
+      display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+      align-items: stretch; gap: .6rem;
+    }
+    .flow-card {
+      min-width: 0; padding: 1rem .8rem; border-radius: 15px; text-align: center;
+      border: 1px solid rgba(149, 194, 164, .18); background: rgba(4, 22, 16, .56);
+    }
+    .flow-card .flow-icon { color: var(--green); margin-bottom: .55rem; }
+    .flow-card svg { width: 25px; height: 25px; }
+    .flow-card strong { display: block; font-size: .88rem; line-height: 1.3; }
+    .flow-card small { display: block; margin-top: .4rem; color: #9bb3a3; font-size: .75rem; line-height: 1.45; }
+    .flow-arrow { align-self: center; color: #5e9d79; font-size: 1.35rem; font-weight: 800; }
+    .diagram-caption { margin: 1rem 0 0; color: #91aa9a; font-size: .82rem; }
+    .oauth-flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .65rem; }
+    .oauth-step {
+      position: relative; min-height: 145px; padding: 1rem; border: 1px solid var(--line);
+      border-radius: 15px; background: rgba(4, 22, 16, .56);
+    }
+    .step-number { color: var(--green); font-size: .74rem; font-weight: 900; letter-spacing: .1em; }
+    .oauth-step strong { display: block; margin: .6rem 0 .35rem; font-size: .9rem; }
+    .oauth-step p { margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.5; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+    .info-panel { padding: 1.5rem; border-radius: 20px; border: 1px solid var(--line); background: var(--panel); }
+    .info-panel p, .info-panel li { color: var(--muted); font-size: .94rem; }
+    .info-panel ul { padding-left: 1.2rem; margin-bottom: 0; }
+    .notice {
+      padding: 1.2rem 1.35rem; border: 1px solid rgba(245, 197, 108, .25);
+      border-left: 4px solid var(--amber); border-radius: 12px; background: rgba(91, 63, 20, .16);
+    }
+    .notice strong { color: #ffdfa1; }
+    .notice p { margin: 0; color: #d7c7a7; }
+    .contact-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 1.2rem; }
+    .contact-card { padding: 1.5rem; border: 1px solid var(--line); border-radius: 20px; background: var(--panel); }
+    .contact-card p { color: var(--muted); }
+    .contact-links { display: grid; gap: .7rem; }
+    .contact-links a { color: var(--mint); overflow-wrap: anywhere; }
+    footer { padding: 2rem 0 2.5rem; border-top: 1px solid var(--line); color: #8da596; font-size: .86rem; }
+    .footer-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+    .footer-links { display: flex; flex-wrap: wrap; gap: 1.1rem; }
+    .footer-links a { color: var(--muted); text-decoration: none; }
+    .footer-links a:hover { color: var(--mint); }
+    .fine-print { margin: 1rem 0 0; max-width: 90ch; color: #718b7b; font-size: .78rem; }
+    @media (max-width: 900px) {
+      .hero-grid { grid-template-columns: 1fr; }
+      .hero-visual { min-height: 390px; }
+      .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .oauth-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .flow { grid-template-columns: 1fr auto 1fr; }
+      .flow-card:nth-of-type(5), .flow-card:nth-of-type(7) { margin-top: .5rem; }
+    }
+    @media (max-width: 640px) {
+      .wrap { width: min(100% - 1.25rem, 1160px); }
+      .nav { min-height: 68px; }
+      .nav-links { gap: .7rem; }
+      .nav-links a { font-size: .8rem; }
+      .nav-cta { display: none; }
+      .hero { padding: 4rem 0 3.5rem; }
+      .hero-visual { min-height: 340px; }
+      .core { width: 120px; height: 120px; border-radius: 30px; }
+      .orbit-node { min-width: 102px; padding: .55rem; font-size: .74rem; }
+      .node-whatsapp, .node-calendar { left: 3%; }
+      .node-gmail, .node-tools { right: 3%; }
+      .feature-grid, .two-col, .contact-grid { grid-template-columns: 1fr; }
+      .oauth-flow { grid-template-columns: 1fr 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-arrow { transform: rotate(90deg); justify-self: center; }
+      .flow-card:nth-of-type(5), .flow-card:nth-of-type(7) { margin-top: 0; }
+      .diagram-title { display: block; }
+      .diagram-title .tag { margin-top: .7rem; }
+      .section { padding: 4rem 0; }
+    }
+    @media (max-width: 390px) {
+      .oauth-flow { grid-template-columns: 1fr; }
+      .nav-links a:nth-child(2) { display: none; }
+      h1 { font-size: 2.8rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; color: #17251d; background: #fff; }
+      body { background: #fff; }
+      .topbar { position: static; background: #fff; }
+      .wrap { width: 100%; }
+      .hero-visual, .feature, .diagram-shell, .info-panel, .contact-card { box-shadow: none; background: #fff; color: #17251d; }
+      .hero-copy, .section-intro, .feature p, .info-panel p, .info-panel li { color: #435448; }
+      a { color: #176a43; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <nav class="nav wrap" aria-label="Main navigation">
+      <a class="brand" href="/" aria-label="Vico AI home">
+        <img src="/favicon.svg" alt="" width="39" height="39">
+        <span class="brand-name">Vico <span>AI</span></span>
+      </a>
+      <div class="nav-links">
+        <a href="#platform">Platform</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="/privacy-policy">Privacy</a>
+        <a href="/terms-of-service">Terms</a>
+      </div>
+      <a class="nav-cta" href="#contact">Contact the team <span aria-hidden="true">↗</span></a>
+    </nav>
+  </div>
+
+  <header class="hero">
+    <div class="hero-grid wrap">
+      <div>
+        <span class="eyebrow"><span class="pulse" aria-hidden="true"></span> AI for connected workflows</span>
+        <h1>Make connected work feel <span class="accent">intelligent.</span></h1>
+        <p class="hero-copy">
+          Vico AI is an AI-powered assistant service that brings messaging workflows
+          together with information from connected services. It helps interpret
+          requests, retrieve relevant information and prepare useful responses—with
+          Google access granted by the account owner.
+        </p>
+        <div class="hero-actions">
+          <a class="button" href="#how-it-works">Explore how it works <span aria-hidden="true">↓</span></a>
+          <a class="button secondary" href="/privacy-policy">Read our privacy policy</a>
+        </div>
+        <p class="micro-note">An operator-managed service. Capabilities depend on deployment configuration, connected accounts and access controls.</p>
+      </div>
+
+      <div class="hero-visual" aria-label="Illustration of Vico AI connecting messaging, Gmail, Calendar and approved tools">
+        <div class="orbit">
+          <svg viewBox="0 0 520 430" role="img" aria-label="Connection lines between Vico AI and connected services">
+            <defs>
+              <linearGradient id="lineGlow" x1="0" x2="1">
+                <stop offset="0" stop-color="#2ac77d" stop-opacity=".12"/>
+                <stop offset=".5" stop-color="#78efb1" stop-opacity=".8"/>
+                <stop offset="1" stop-color="#2ac77d" stop-opacity=".12"/>
+              </linearGradient>
+            </defs>
+            <path d="M110 105 Q260 215 410 105 M110 325 Q260 215 410 325" fill="none" stroke="url(#lineGlow)" stroke-width="2" stroke-dasharray="5 8"/>
+            <path d="M110 105 Q120 215 110 325 M410 105 Q400 215 410 325" fill="none" stroke="#4acb8b" stroke-opacity=".22" stroke-width="1.5"/>
+            <circle cx="260" cy="215" r="105" fill="none" stroke="#5be5a2" stroke-opacity=".12" stroke-dasharray="3 8"/>
+          </svg>
+          <div class="core"><div class="core-inner"><strong>Vico AI</strong><small>AI ORCHESTRATION</small></div></div>
+          <div class="orbit-node node-whatsapp"><span class="node-icon">◉</span>WhatsApp</div>
+          <div class="orbit-node node-gmail"><span class="node-icon">✉</span>Gmail</div>
+          <div class="orbit-node node-calendar"><span class="node-icon">▦</span>Calendar</div>
+          <div class="orbit-node node-tools"><span class="node-icon">⌘</span>Tools</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="section" id="platform">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="section-kicker">The platform</span>
+          <h2>One assistant. Connected capabilities.</h2>
+          <p class="section-intro">
+            Vico AI is designed around an orchestration layer: incoming requests are
+            interpreted, relevant tools are selected, and results are assembled into
+            a response. Integrations operate only within the permissions and
+            configuration available to the application.
+          </p>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature">
+            <div class="feature-top">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H7l-4 2 1.3-4A7.5 7.5 0 1 1 20 11.5Z"/><path d="M8 10h8M8 13.5h5"/></svg>
+              </span>
+              <span class="tag live">Implemented</span>
+            </div>
+            <h3>WhatsApp messaging</h3>
+            <p>Processes configured WhatsApp Business Platform webhooks and supports outbound text and template messages, plus message-template and phone-number management. Meta account setup, permissions and eligibility apply.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-top">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4.5" width="18" height="17" rx="2"/><path d="M16 2.5v4M8 2.5v4M3 9h18M7.5 13h3M7.5 16.5h7"/></svg>
+              </span>
+              <span class="tag live">Implemented</span>
+            </div>
+            <h3>Google Calendar</h3>
+            <p>After the connected account owner authorizes Google, the backend can look up events in the account's primary Calendar. The OAuth request also includes permission to manage events; actual event changes depend on the configured workflow.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-top">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.8" y="5" width="18.4" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></svg>
+              </span>
+              <span class="tag live">Implemented</span>
+            </div>
+            <h3>Gmail integration</h3>
+            <p>The service layer supports Gmail message search and retrieval, with email sending implemented in the backend. User-facing availability depends on the deployed application workflow.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-top">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 4.5 6v5.5c0 4.5 3.1 7.7 7.5 9.5 4.4-1.8 7.5-5 7.5-9.5V6L12 3Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg>
+              </span>
+              <span class="tag limited">Configuration-dependent</span>
+            </div>
+            <h3>Permission-aware access</h3>
+            <p>Google requests require an account owner's OAuth consent. WhatsApp webhook signatures are checked for platform-originated requests. These controls serve different purposes and are not interchangeable.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-top">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v3M12 18v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/><circle cx="12" cy="12" r="4"/></svg>
+              </span>
+              <span class="tag live">Implemented</span>
+            </div>
+            <h3>AI orchestration</h3>
+            <p>The backend can use its configured AI provider to interpret requests and prepare responses. Depending on deployment configuration, the provider may be a hosted AI service or a locally operated model.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-top">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v14H4zM8 9h8M8 12h5M8 15h7"/></svg>
+              </span>
+              <span class="tag limited">Operator-managed</span>
+            </div>
+            <h3>Application context</h3>
+            <p>The current deployment uses a shared application-owner context and a shared connected Google account. It is not currently a self-service, multi-tenant product with separate accounts for every end user.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="how-it-works">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="section-kicker">Request lifecycle</span>
+          <h2>From incoming message to useful response.</h2>
+          <p class="section-intro">
+            The diagram below illustrates the high-level request path. The exact
+            tools used depend on the request, available integrations and the
+            permissions granted to the connected accounts.
+          </p>
+        </div>
+
+        <div class="diagram-shell">
+          <div class="diagram-title">
+            <div>
+              <h3>Illustrative message-processing flow</h3>
+              <p>A simplified view of the backend's orchestration lifecycle.</p>
+            </div>
+            <span class="tag live">Conceptual architecture</span>
+          </div>
+
+          <div class="flow" aria-label="Message flow: WhatsApp or API request, webhook or route handling, AI orchestration, authorized tools, response">
+            <div class="flow-card">
+              <div class="flow-icon" aria-hidden="true">◉</div>
+              <strong>1. Incoming request</strong>
+              <small>WhatsApp webhook or supported application request</small>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-card">
+              <div class="flow-icon" aria-hidden="true">⌁</div>
+              <strong>2. Request handling</strong>
+              <small>Validate and interpret the incoming event</small>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-card">
+              <div class="flow-icon" aria-hidden="true">✧</div>
+              <strong>3. AI orchestration</strong>
+              <small>Understand intent and determine whether a tool is relevant</small>
+            </div>
+            <div class="flow-arrow" aria-hidden="true">→</div>
+            <div class="flow-card">
+              <div class="flow-icon" aria-hidden="true">↗</div>
+              <strong>4. Connected tools</strong>
+              <small>Retrieve permitted Gmail or Calendar information when configured</small>
+            </div>
+          </div>
+          <p class="diagram-caption">The result is assembled into a response and returned through the relevant configured channel. This illustration does not imply that every tool action is exposed to every user or that all actions happen for every request.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="section-kicker">Google connection</span>
+          <h2>Google access starts with account-owner consent.</h2>
+          <p class="section-intro">
+            Vico AI uses Google's OAuth authorization flow for the connected
+            application-owner account. The account owner approves the requested
+            scopes before the backend can make authorized Google API requests.
+          </p>
+        </div>
+        <div class="diagram-shell">
+          <div class="diagram-title">
+            <div>
+              <h3>Illustrative Google OAuth lifecycle</h3>
+              <p>Authorization is granted by a Google account owner—not by the AI model.</p>
+            </div>
+            <span class="tag live">OAuth 2.0</span>
+          </div>
+          <div class="oauth-flow" aria-label="OAuth flow: owner initiates connection, Google consent, callback, encrypted token storage, authorized API requests">
+            <div class="oauth-step">
+              <span class="step-number">STEP 01</span>
+              <strong>Owner starts connection</strong>
+              <p>The application creates an authorization URL and state value.</p>
+            </div>
+            <div class="oauth-step">
+              <span class="step-number">STEP 02</span>
+              <strong>Google consent</strong>
+              <p>The owner signs in and approves the requested Gmail and Calendar scopes.</p>
+            </div>
+            <div class="oauth-step">
+              <span class="step-number">STEP 03</span>
+              <strong>Secure callback</strong>
+              <p>Google returns an authorization code; the backend validates state and exchanges the code.</p>
+            </div>
+            <div class="oauth-step">
+              <span class="step-number">STEP 04</span>
+              <strong>Token storage</strong>
+              <p>OAuth credentials are encrypted and stored in the configured database.</p>
+            </div>
+            <div class="oauth-step">
+              <span class="step-number">STEP 05</span>
+              <strong>Authorized API calls</strong>
+              <p>The backend uses the stored authorization to access permitted Google services.</p>
+            </div>
+          </div>
+          <p class="diagram-caption">Access is limited by the scopes granted, Google's policies, token validity and the application's configured workflows. The account owner can revoke access through their Google Account settings.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="section-kicker">Data and permissions</span>
+          <h2>Connected services have distinct trust boundaries.</h2>
+          <p class="section-intro">
+            Each integration has its own authentication and authorization mechanism.
+            A message arriving through one channel does not automatically grant
+            access to data held by another connected service.
+          </p>
+        </div>
+        <div class="two-col">
+          <article class="info-panel">
+            <h3>Google account data</h3>
+            <p>Google features require OAuth consent from the account owner. The current authorization request includes:</p>
+            <ul>
+              <li>Google Calendar event access.</li>
+              <li>Gmail read access.</li>
+              <li>Gmail send access.</li>
+            </ul>
+            <p style="margin-top:1rem">OAuth tokens are encrypted before being stored in the configured database. Google API requests remain subject to the granted scopes and Google's own authorization controls.</p>
+          </article>
+          <article class="info-panel">
+            <h3>WhatsApp messages</h3>
+            <p>WhatsApp integration requires configured Meta Business Platform credentials, phone-number identifiers and webhook configuration.</p>
+            <ul>
+              <li>Webhook signatures help verify requests from Meta.</li>
+              <li>Outbound messaging depends on the configured WhatsApp account and platform rules.</li>
+              <li>A sender's WhatsApp message does not itself authorize access to the connected Google account.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="section-kicker">Transparency</span>
+          <h2>What the current deployment does—and does not—provide.</h2>
+          <p class="section-intro">
+            We aim to describe the current backend accurately. The availability of
+            a capability in service code does not necessarily mean it is exposed as
+            a user-facing feature in every deployment.
+          </p>
+        </div>
+        <div class="notice" role="note">
+          <p><strong>Deployment and access notice:</strong> The current application uses a shared owner context and does not provide built-in general HTTP authentication or per-user isolation for all API routes. The operator must enforce appropriate network or upstream access controls before exposing protected API functionality to the public internet.</p>
+        </div>
+        <div class="two-col" style="margin-top:1.2rem">
+          <article class="info-panel">
+            <h3>Current limitations</h3>
+            <ul>
+              <li>Separate end-user accounts and per-user Google data isolation are not currently available.</li>
+              <li>A self-service Google disconnect and data-deletion interface is not currently implemented.</li>
+              <li>General HTTP API authentication is not implemented by the application itself; deployment-level controls are required.</li>
+              <li>Calendar event changes and Gmail sending exist in backend service code, but are not exposed as general user-facing API routes in the current backend.</li>
+            </ul>
+          </article>
+          <article class="info-panel">
+            <h3>What this means</h3>
+            <ul>
+              <li>The service is currently operator-managed rather than an open public sign-up product.</li>
+              <li>Connected accounts should belong to, or be authorized by, the account owner.</li>
+              <li>Do not use the service for workflows requiring account isolation or controls that the operator has not configured.</li>
+              <li>This page describes the implementation currently present in the application, not a feature roadmap.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="contact">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="section-kicker">Get in touch</span>
+          <h2>Questions about Vico AI?</h2>
+          <p class="section-intro">For questions about the service, connected integrations or how information is handled, contact the application operator.</p>
+        </div>
+        <div class="contact-grid">
+          <div class="contact-card">
+            <h3>Vico AI</h3>
+            <p>AI assistance for connected messaging and information workflows.</p>
+            <div class="contact-links">
+              <a href="mailto:kimaniwilfred95@gmail.com">kimaniwilfred95@gmail.com</a>
+              <a href="tel:+254791614036">+254 791 614 036</a>
+            </div>
+          </div>
+          <div class="contact-card">
+            <h3>Policies and information</h3>
+            <p>Review the documents describing how the service operates and handles information.</p>
+            <div class="contact-links">
+              <a href="/privacy-policy">Privacy Policy ↗</a>
+              <a href="/terms-of-service">Terms of Service ↗</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <a class="brand" href="/">
+          <img src="/favicon.svg" alt="" width="30" height="30">
+          <span class="brand-name">Vico <span>AI</span></span>
+        </a>
+        <nav class="footer-links" aria-label="Footer navigation">
+          <a href="/">Home</a>
+          <a href="/privacy-policy">Privacy Policy</a>
+          <a href="/terms-of-service">Terms of Service</a>
+        </nav>
+      </div>
+      <p class="fine-print">
+        Vico AI is not affiliated with, endorsed by, or sponsored by Google, Meta or OpenAI.
+        Product capabilities depend on the application's configuration, connected accounts,
+        permissions and deployment environment.
+      </p>
+    </div>
+  </footer>
+</body>
+</html>
