@@ -277,6 +277,19 @@ test('pending approvals are returned without asking the AI to claim execution', 
     toolRegistry,
     approvalService: new AlwaysPendingApprovalService(true),
     aiProvider: {
+      async planRequest() {
+        return {
+          provider: 'test',
+          model: 'test',
+          raw: '{"action":"execute_tool","tool":"calendar_lookup","confidence":0.99}',
+          decision: {
+            action: 'execute_tool',
+            tool: 'calendar_lookup',
+            parameters: {},
+            confidence: 0.99,
+          },
+        };
+      },
       async generateReply() {
         providerCalls += 1;
         return { provider: 'test', model: 'test', content: 'This must not run.' };

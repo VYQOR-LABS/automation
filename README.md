@@ -38,15 +38,19 @@ OPENAI_MODEL=gpt-4o-mini
 `OPENAI_API_KEY` is required only when OpenAI is selected. The AI response
 includes the selected provider and model in its metadata.
 
-### Request flow logs
+### AI orchestration and request flow logs
 
-Structured info logs correlate the AI request, memory search, tool selection,
-tool execution, and AI provider response with a `flowId`. Google Calendar and
-Gmail service calls log the API operation, status, duration, and result count;
-OAuth authorization, token exchange, credential lookup, refresh, and refresh
-persistence log only operation metadata and timings. Tokens, authorization
-codes, email contents, calendar event contents, and Gmail search queries are
-not included. The default `LOG_LEVEL=info` includes these lifecycle logs.
+The complete planning → validation → tool execution → synthesis → WhatsApp
+delivery lifecycle is documented in [AI orchestration flow](docs/ai-orchestration.md).
+
+Structured info logs correlate incoming requests, memory search, AI planning,
+approval evaluation, tool execution, synthesis, and delivery with a `flowId`.
+Google Calendar and Gmail service calls log API operation, status, duration,
+and result count. OAuth authorization, token exchange, credential lookup,
+refresh, and refresh persistence log only operation metadata and timings.
+Tokens, authorization codes, email contents, calendar event contents, and Gmail
+search queries are not included. The default `LOG_LEVEL=info` includes these
+lifecycle logs.
 
 ### Single-owner configuration
 
@@ -110,6 +114,13 @@ successful. If authorization is revoked, reconnect through
 `GET /api/google/connect`.
 
 `GET /api/google/calendar/events` and Gmail use the same in-memory credentials.
+
+Swagger documents two direct Gmail API operations:
+
+- `GET /api/google/gmail/messages?q=in%3Ainbox&maxResults=5&includeBody=false` searches the configured Gmail account. Results include message metadata and snippets. Set `includeBody=true` to include plain-text message bodies; private email responses are redacted from HTTP response logs.
+- `POST /api/google/gmail/send` sends a plain-text email through `GmailService`. The body fields are `to`, optional `cc` and `bcc`, `subject`, and `body`. Ordinary email may be sent immediately; sensitive email is evaluated by `ApprovalService` and returns HTTP `202` or `403` instead of falsely reporting delivery.
+
+Approve or reject a pending send using `POST /api/approvals/{approvalId}/decision`. A pending approval is not sent mail and must never be represented as successful delivery.
 The backend refreshes expired access tokens using the stored refresh token and
 persists updated credentials before returning an authenticated client. The
 configured `GOOGLE_REDIRECT_URI` must exactly match the URI registered in Google

@@ -21,9 +21,11 @@ import {
 } from './modules/google/google.service.js';
 import { CalendarService } from './modules/google/calendar.service.js';
 import { GmailService } from './modules/google/gmail.service.js';
+import { interpretGmailMessage } from './modules/google/gmail-result-interpreter.js';
 import { getGoogleRequestUrl } from './modules/google/google-api-logger.js';
 import { MemoryService } from './modules/memory/memory.service.js';
 import { MessagingService } from './modules/messaging/messaging.service.js';
+import { IntelligenceService } from './modules/intelligence/intelligence.service.js';
 import { ApprovalService } from './modules/tools/approval.service.js';
 import { ToolRegistry } from './modules/tools/tool-registry.js';
 import {
@@ -50,7 +52,7 @@ function formatResponseBody(payload: string | Buffer | null) {
 
 function googleFailure(
   error: unknown,
-  tool: 'calendar_lookup' | 'gmail_search',
+  tool: 'calendar_lookup' | 'gmail_search' | 'gmail_send',
 ) {
   const properties = typeof error === 'object' && error !== null
     ? error as { response?: { status?: unknown } | null }
@@ -168,6 +170,7 @@ type GoogleAuthServiceContract = Pick<
 export async function buildApp(
   dependencies: {
     googleAuthService?: GoogleAuthServiceContract;
+    gmailService?: Pick<GmailService, 'listMessages' | 'getMessage' | 'sendMessage'>;
     whatsappPhoneNumberId?: string;
     whatsappBusinessAccountId?: string;
     whatsappWebhookSecret?: string;
@@ -391,16 +394,26 @@ export async function buildApp(
   );
   const googleAuthService = dependencies.googleAuthService ?? new GoogleAuthService();
   const calendarService = new CalendarService(approvalService, googleAuthService);
-  const gmailService = new GmailService(approvalService, googleAuthService);
+  const gmailService = dependencies.gmailService ??
+    new GmailService(approvalService, googleAuthService);
   const whatsappService = new WhatsAppService(whatsappWebhookSecret);
   const toolRegistry = new ToolRegistry();
   toolRegistry.register({
     name: 'memory_search',
     description: 'Search user memory for personal facts and context.',
     risk: 'low',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', maxLength: 500 } },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    validateInput: (input) => z.object({
+      query: z.string().min(1).max(500),
+    }).strict().parse(input),
     execute: async (input) => ({
       tool: 'memory_search',
-      query: input.message ?? '',
+      query: input.query,
       results: [],
     }),
   });
@@ -408,21 +421,55 @@ export async function buildApp(
     name: 'calendar_lookup',
     description: 'Inspect the user calendar for upcoming events.',
     risk: 'low',
+    parameters: {
+      type: 'object',
+      properties: {
+        period: { type: 'string', enum: ['today', 'tomorrow', 'this_week', 'upcoming'] },
+        timeZone: { type: 'string', maxLength: 100 },
+        q: { type: 'string', maxLength: 200 },
+      },
+      additionalProperties: false,
+    },
+    validateInput: (input) => z.object({
+      period: z.enum(['today', 'tomorrow', 'this_week', 'upcoming']).optional(),
+      timeZone: z.string().min(1).max(100).optional(),
+      q: z.string().max(200).optional(),
+    }).strict().parse(input),
     execute: async (input) => {
       const message = typeof input.message === 'string' ? input.message.toLowerCase() : '';
-      const period = message.includes('tomorrow')
-        ? 'tomorrow'
-        : message.includes('this week') || message.includes('week')
-          ? 'this_week'
-          : message.includes('today')
-            ? 'today'
-            : 'upcoming';
+      const period = typeof input.period === 'string'
+        ? input.period as 'today' | 'tomorrow' | 'this_week' | 'upcoming'
+        : message.includes('tomorrow')
+          ? 'tomorrow'
+          : message.includes('this week') || message.includes('week')
+            ? 'this_week'
+            : message.includes('today')
+              ? 'today'
+              : 'upcoming';
       try {
-        const events = await calendarService.listEvents({ period });
+        const searchTerms = Array.isArray(input.searchTerms)
+          ? input.searchTerms.filter((term): term is string => typeof term === 'string').slice(0, 5)
+          : [];
+        const refinedTerms = [...new Set([...searchTerms, message.match(/mary[a-z]*|meryam|madam/g)?.[0] ?? ''].filter(Boolean))];
+        const events = await calendarService.listEvents({
+          period,
+          timeZone: typeof input.timeZone === 'string' ? input.timeZone : 'Africa/Nairobi',
+          q: typeof input.q === 'string'
+            ? input.q
+            : refinedTerms[0] && refinedTerms[0] !== 'birthday'
+              ? refinedTerms.join(' ')
+              : undefined,
+        });
+        const intelligence = new IntelligenceService();
+        const decision = intelligence.understand(typeof input.message === 'string' ? input.message : '');
+        const ranked = intelligence.rankCalendarEvents(events, decision);
         return {
           success: true,
           tool: 'calendar_lookup',
-          data: { events },
+          data: {
+            events,
+            rankedMatches: ranked.filter((match) => match.score > 0).slice(0, 5).map((match) => ({ data: match.value, score: match.score, evidence: match.evidence })),
+          },
         };
       } catch (error) {
         return googleFailure(error, 'calendar_lookup').result;
@@ -431,18 +478,74 @@ export async function buildApp(
   });
   toolRegistry.register({
     name: 'gmail_search',
-    description: 'Search a user’s Gmail messages for relevant information.',
+    description: 'Search Gmail messages and retrieve full message content for relevant email candidates.',
     risk: 'low',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', maxLength: 500, description: 'Gmail search query. Prefer a concise query with relevant search operators.' },
+        searchTerms: { type: 'array', items: { type: 'string', maxLength: 100 }, maxItems: 8 },
+        maxResults: { type: 'integer', minimum: 1, maximum: 10 },
+        requiresFullContent: { type: 'boolean' },
+      },
+      additionalProperties: false,
+    },
+    validateInput: (input) => z.object({
+      query: z.string().max(500).optional(),
+      searchTerms: z.array(z.string().min(1).max(100)).max(8).optional(),
+      maxResults: z.number().int().min(1).max(10).optional(),
+      requiresFullContent: z.boolean().optional(),
+    }).strict().parse(input),
     execute: async (input) => {
       try {
-        const messages = await gmailService.listMessages(
-          typeof input.message === 'string' ? input.message : 'in:inbox',
-          5,
-        );
+        const searchTerms = Array.isArray(input.searchTerms)
+          ? input.searchTerms.filter((term): term is string => typeof term === 'string').slice(0, 8)
+          : [];
+        const query = typeof input.query === 'string' && input.query.trim()
+          ? input.query.trim()
+          : searchTerms.length > 0
+          ? searchTerms.join(' ')
+          : typeof input.message === 'string' ? input.message : 'in:inbox';
+        const maxResults = typeof input.maxResults === 'number' ? input.maxResults : 5;
+        const retrievalStartedAt = process.hrtime.bigint();
+        const matches = await gmailService.listMessages(query, maxResults);
+        const candidates = matches
+          .filter((match): match is typeof match & { id: string } =>
+            typeof match.id === 'string' && match.id.length > 0)
+          .slice(0, 5);
+        const messages = await Promise.all(candidates.map(({ id }) =>
+          gmailService.getMessage(id)));
+        const retrievalDurationMs =
+          Number(process.hrtime.bigint() - retrievalStartedAt) / 1_000_000;
+        const interpretationStartedAt = process.hrtime.bigint();
+        const interpreted = messages.map((message) => interpretGmailMessage(message));
+        const interpretationDurationMs =
+          Number(process.hrtime.bigint() - interpretationStartedAt) / 1_000_000;
+        const intelligence = new IntelligenceService();
+        const decision = intelligence.understand(typeof input.message === 'string' ? input.message : '');
+        const ranked = intelligence.rankGmailResults(interpreted, decision);
+        logger.info({
+          flowId: input.flowId,
+          tool: 'gmail_search',
+          queryTermCount: searchTerms.length,
+          retrievedMessageCount: messages.length,
+          fullBodyCount: messages.filter((message) => typeof message.body === 'string').length,
+          retrievalDurationMs,
+          interpretationDurationMs,
+        }, 'ai.gmail.retrieval_interpreted');
         return {
           success: true,
           tool: 'gmail_search',
-          data: { messages },
+          data: {
+            messages: ranked.map((match) => match.value),
+            retrieval: {
+              messageCount: messages.length,
+              fullBodyCount: messages.filter((message) => typeof message.body === 'string').length,
+              durationMs: retrievalDurationMs,
+              interpretationDurationMs,
+            },
+            rankedMatches: ranked.filter((match) => match.score > 0).slice(0, 5).map((match) => ({ data: match.value, score: match.score, evidence: match.evidence })),
+          },
         };
       } catch (error) {
         return googleFailure(error, 'gmail_search').result;
@@ -456,6 +559,7 @@ export async function buildApp(
     toolRegistry,
     approvalService,
     aiProvider,
+    whatsappService,
   });
 
   const validationErrorResponse = {
@@ -667,7 +771,15 @@ export async function buildApp(
         return reply.code(401).send({ error: 'invalid_webhook_signature' });
       }
       logger.info({ contentLength: data.content.length }, 'Ingesting signed WhatsApp message');
-      return messagingService.ingestMessage(data);
+      const ingested = await messagingService.ingestMessage(data);
+      const ownerUserId = await requireAppOwnerUserId();
+      const processed = await aiOrchestrator.process({
+        userId: ownerUserId,
+        phone: data.phone,
+        message: data.content,
+        flowId: ingested.messageId,
+      });
+      return { ...ingested, ai: processed };
     },
   );
 
@@ -1792,6 +1904,186 @@ export async function buildApp(
           'Google Calendar lookup failed',
         );
         return reply.code(failure.statusCode).send(failure.result);
+      }
+    },
+  );
+
+  api.get(
+    '/api/google/gmail/messages',
+    {
+      schema: {
+        tags: ['Google'],
+        summary: 'Search and check Gmail messages',
+        description:
+          'Searches the configured Google account and optionally returns full plain-text bodies. Protect this private endpoint behind an authentication boundary.',
+        querystring: {
+          type: 'object',
+          properties: {
+            q: { type: 'string', maxLength: 500, default: 'in:inbox' },
+            maxResults: { type: 'integer', minimum: 1, maximum: 10, default: 5 },
+            includeBody: { type: 'boolean', default: false },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean', example: true },
+              tool: { type: 'string', example: 'gmail_search' },
+              data: {
+                type: 'object',
+                properties: {
+                  messages: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string' },
+                        threadId: { type: 'string' },
+                        from: { type: 'string' },
+                        to: { type: 'string' },
+                        subject: { type: 'string' },
+                        date: { type: 'string' },
+                        snippet: { type: 'string' },
+                        body: { type: 'string' },
+                      },
+                      additionalProperties: true,
+                    },
+                  },
+                },
+                required: ['messages'],
+              },
+            },
+            required: ['success', 'tool', 'data'],
+          },
+          400: validationErrorResponse,
+          401: { type: 'object', additionalProperties: true },
+          502: { type: 'object', additionalProperties: true },
+        },
+      },
+    },
+    async (request, reply) => {
+      const query = z.object({
+        q: z.string().max(500).default('in:inbox'),
+        maxResults: z.coerce.number().int().min(1).max(10).default(5),
+        includeBody: z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false),
+      }).parse(request.query);
+      try {
+        await requireAppOwnerUserId();
+        const matches = await gmailService.listMessages(query.q, query.maxResults);
+        const messages = await Promise.all(matches
+          .filter((match): match is typeof match & { id: string } => typeof match.id === 'string' && match.id.length > 0)
+          .map(async ({ id }) => {
+            const message = await gmailService.getMessage(id, query.includeBody);
+            return {
+              id: message.id,
+              threadId: message.threadId,
+              from: message.from,
+              to: message.to,
+              subject: message.subject,
+              date: message.date,
+              snippet: message.snippet,
+              ...(query.includeBody && message.body !== undefined ? { body: message.body } : {}),
+            };
+          }));
+        return { success: true, tool: 'gmail_search', data: { messages } };
+      } catch (error) {
+        const failure = googleFailure(error, 'gmail_search');
+        if (failure.statusCode === 401) return reply.code(401).send(failure.result);
+        if (failure.statusCode === 400) return reply.code(400).send(failure.result);
+        return reply.code(502).send(failure.result);
+      }
+    },
+  );
+
+  api.post(
+    '/api/google/gmail/send',
+    {
+      schema: {
+        tags: ['Google'],
+        summary: 'Write and send an email with Gmail',
+        description:
+          'Sends plain text through Gmail using existing server-side validation and approval policies. Pending or blocked approval never means the email was sent.',
+        body: {
+          type: 'object',
+          properties: {
+            to: { type: 'string', minLength: 1, maxLength: 2048, description: 'Comma-separated recipient email addresses.' },
+            cc: { type: 'string', maxLength: 2048 },
+            bcc: { type: 'string', maxLength: 2048 },
+            subject: { type: 'string', minLength: 1, maxLength: 998 },
+            body: { type: 'string', minLength: 1, maxLength: 1000000 },
+          },
+          required: ['to', 'subject', 'body'],
+          additionalProperties: false,
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean', example: true },
+              status: { type: 'string', example: 'sent' },
+              messageId: { type: 'string' },
+              threadId: { type: 'string' },
+            },
+            required: ['success', 'status'],
+          },
+          202: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean', example: false },
+              status: { type: 'string', example: 'pending' },
+              approvalRequired: { type: 'boolean', example: true },
+              approvalId: { type: 'string' },
+              approvalEndpoint: { type: 'string' },
+              message: { type: 'string' },
+            },
+            required: ['success', 'status', 'approvalRequired', 'message'],
+          },
+          400: validationErrorResponse,
+          403: { type: 'object', additionalProperties: true },
+          401: { type: 'object', additionalProperties: true },
+          502: { type: 'object', additionalProperties: true },
+        },
+      },
+    },
+    async (request, reply) => {
+      const recipientList = z.string().max(2048).refine((value) => value.split(',').every((address) =>
+        /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(address.trim())));
+      const email = z.object({
+        to: recipientList,
+        cc: recipientList.optional(),
+        bcc: recipientList.optional(),
+        subject: z.string().trim().min(1).max(998).refine((value) => !/[\r\n]/.test(value)),
+        body: z.string().trim().min(1).max(1_000_000),
+      }).strict().parse(request.body);
+      try {
+        const ownerUserId = await requireAppOwnerUserId();
+        const result = await gmailService.sendMessage(email, ownerUserId);
+        if (typeof result === 'object' && result !== null && 'approved' in result && result.approved === false) {
+          const approval = result as { status?: string; approvalId?: string; approvalEndpoint?: string; message?: string };
+          const statusCode = approval.status === 'pending' ? 202 : 403;
+          return reply.code(statusCode).send({
+            success: false,
+            status: approval.status ?? 'blocked',
+            approvalRequired: true,
+            ...(approval.approvalId ? { approvalId: approval.approvalId } : {}),
+            ...(approval.approvalEndpoint ? { approvalEndpoint: approval.approvalEndpoint } : {}),
+            message: approval.message ?? 'The email was not sent.',
+          });
+        }
+        const sent = result as { id?: string | null; threadId?: string | null };
+        return {
+          success: true,
+          status: 'sent',
+          ...(sent.id ? { messageId: sent.id } : {}),
+          ...(sent.threadId ? { threadId: sent.threadId } : {}),
+        };
+      } catch (error) {
+        const failure = googleFailure(error, 'gmail_send');
+        if (failure.statusCode === 401) return reply.code(401).send(failure.result);
+        if (failure.statusCode === 400) return reply.code(400).send(failure.result);
+        if (failure.statusCode === 403) return reply.code(403).send(failure.result);
+        return reply.code(502).send(failure.result);
       }
     },
   );

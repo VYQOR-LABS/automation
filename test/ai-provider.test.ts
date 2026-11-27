@@ -19,6 +19,9 @@ const ollamaSettings: AiProviderSettings = {
   ollamaNumCtx: 2048,
   ollamaNumPredict: 200,
   ollamaTimeoutMs: 120_000,
+  ollamaPlanningTimeoutMs: 120_000,
+  ollamaResponseTimeoutMs: 120_000,
+  ollamaMaxConcurrent: 1,
 };
 
 test('loads Ollama defaults and validates selected provider settings', () => {

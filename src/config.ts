@@ -37,9 +37,18 @@ export function loadAiConfig(env: NodeJS.ProcessEnv = process.env): AiProviderSe
   const ollamaNumPredict = aiProvider === 'ollama'
     ? positiveInteger(env.OLLAMA_NUM_PREDICT, 200, 'OLLAMA_NUM_PREDICT')
     : 200;
-  const ollamaTimeoutMs = aiProvider === 'ollama'
+  const legacyOllamaTimeoutMs = aiProvider === 'ollama'
     ? positiveInteger(env.OLLAMA_TIMEOUT_MS, 120_000, 'OLLAMA_TIMEOUT_MS')
     : 120_000;
+  const ollamaPlanningTimeoutMs = aiProvider === 'ollama'
+    ? positiveInteger(env.OLLAMA_PLANNING_TIMEOUT_MS, legacyOllamaTimeoutMs, 'OLLAMA_PLANNING_TIMEOUT_MS')
+    : legacyOllamaTimeoutMs;
+  const ollamaResponseTimeoutMs = aiProvider === 'ollama'
+    ? positiveInteger(env.OLLAMA_RESPONSE_TIMEOUT_MS, legacyOllamaTimeoutMs, 'OLLAMA_RESPONSE_TIMEOUT_MS')
+    : legacyOllamaTimeoutMs;
+  const ollamaMaxConcurrent = aiProvider === 'ollama'
+    ? positiveInteger(env.OLLAMA_MAX_CONCURRENT, 1, 'OLLAMA_MAX_CONCURRENT')
+    : 1;
 
   if (aiProvider === 'openai') {
     if (!openAiApiKey.trim()) {
@@ -75,7 +84,10 @@ export function loadAiConfig(env: NodeJS.ProcessEnv = process.env): AiProviderSe
     ollamaModel,
     ollamaNumCtx,
     ollamaNumPredict,
-    ollamaTimeoutMs,
+    ollamaTimeoutMs: legacyOllamaTimeoutMs,
+    ollamaPlanningTimeoutMs,
+    ollamaResponseTimeoutMs,
+    ollamaMaxConcurrent,
   };
 }
 

@@ -7,6 +7,20 @@ import { ApprovalService } from '../src/modules/tools/approval.service.js';
 import { ToolRegistry } from '../src/modules/tools/tool-registry.js';
 import { MemoryService } from '../src/modules/memory/memory.service.js';
 
+function plannedTool(tool: string): NonNullable<AiProvider['planRequest']> {
+  return async () => ({
+    provider: 'test',
+    model: 'test',
+    raw: JSON.stringify({ action: 'execute_tool', tool, confidence: 0.99 }),
+    decision: {
+      action: 'execute_tool',
+      tool,
+      parameters: {},
+      confidence: 0.99,
+    },
+  });
+}
+
 test('executes a low-risk tool before Ollama and sends its structured result with memory', async (t) => {
   let requestBody: Record<string, unknown> | undefined;
   const sequence: string[] = [];
@@ -15,7 +29,12 @@ test('executes a low-risk tool before Ollama and sends its structured result wit
     'fetch',
     async (_input: RequestInfo | URL, init?: RequestInit) => {
       sequence.push('provider');
-      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const messages = body.messages as Array<{ content: string }>;
+      if (messages[0]?.content.includes('request planner')) {
+        return Response.json({ message: { content: '{"action":"execute_tool","tool":"calendar_lookup","parameters":{"period":"upcoming"},"confidence":0.99}' } });
+      }
+      requestBody = body;
       return Response.json({ message: { content: 'Calendar response.' } });
     },
   );
@@ -95,6 +114,7 @@ test('passes successful empty calendar results to the provider as authoritative 
     toolRegistry,
     approvalService: new ApprovalService(true),
     aiProvider: {
+      planRequest: plannedTool('calendar_lookup'),
       async generateReply(input) {
         received = input;
         return {
@@ -145,6 +165,7 @@ test('passes structured Calendar results to the provider without exposing Google
     toolRegistry,
     approvalService: new ApprovalService(true),
     aiProvider: {
+      planRequest: plannedTool('calendar_lookup'),
       async generateReply(input) {
         received = input;
         return { provider: 'test', model: 'test', content: 'One event is on your calendar.' };
@@ -188,6 +209,7 @@ test('preserves structured Calendar failures for the provider instead of treatin
     toolRegistry,
     approvalService: new ApprovalService(true),
     aiProvider: {
+      planRequest: plannedTool('calendar_lookup'),
       async generateReply(input) {
         received = input;
         return { provider: 'test', model: 'test', content: 'I could not retrieve events.' };
@@ -224,6 +246,7 @@ test('reports tool failures without substituting an empty successful result', as
     toolRegistry,
     approvalService: new ApprovalService(true),
     aiProvider: {
+      planRequest: plannedTool('gmail_search'),
       async generateReply(input) {
         received = input;
         return {
@@ -259,6 +282,14 @@ test('preserves general conversation without inventing tool results', async () =
     toolRegistry,
     approvalService: new ApprovalService(true),
     aiProvider: {
+      async planRequest() {
+        return {
+          provider: 'test',
+          model: 'test',
+          raw: '{"action":"respond_directly","confidence":0.99}',
+          decision: { action: 'respond_directly', confidence: 0.99 },
+        };
+      },
       async generateReply(input) {
         received = input;
         return { provider: 'test', model: 'test', content: 'Hello!' };

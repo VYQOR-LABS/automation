@@ -124,7 +124,7 @@ export class GmailService {
     return response.data.messages ?? [];
   }
 
-  async getMessage(messageId: string) {
+  async getMessage(messageId: string, includeBody = true) {
     const authClient = await this.googleAuthService.getAuthenticatedGoogleClient();
     const gmailClient = this.createGmailClient(authClient);
     const response = await logGoogleApiRequest({
@@ -133,7 +133,8 @@ export class GmailService {
       request: () => gmailClient.users.messages.get({
         userId: 'me',
         id: messageId,
-        format: 'full',
+        format: includeBody ? 'full' : 'metadata',
+        ...(!includeBody ? { metadataHeaders: ['From', 'To', 'Subject', 'Date'] } : {}),
       }),
     });
     const message = response.data;
@@ -149,8 +150,12 @@ export class GmailService {
       to: header('to'),
       subject: header('subject'),
       date: header('date'),
-      body: getMimeBody(message.payload, 'text/plain') ??
-        getMimeBody(message.payload, 'text/html'),
+      ...(includeBody
+        ? {
+            body: getMimeBody(message.payload, 'text/plain') ??
+              getMimeBody(message.payload, 'text/html'),
+          }
+        : {}),
     };
   }
 }

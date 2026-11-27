@@ -11,6 +11,7 @@ export type CalendarLookupOptions = {
   period?: CalendarLookupPeriod;
   timeZone?: string;
   now?: Date;
+  q?: string;
 };
 
 type CalendarEventResult = {
@@ -266,6 +267,7 @@ export class CalendarService {
             timeMin,
             ...(timeMax ? { timeMax } : {}),
             timeZone: options.timeZone ?? 'Africa/Nairobi',
+            ...(options.q ? { q: options.q } : {}),
             singleEvents: true,
             orderBy: 'startTime',
             maxResults,
